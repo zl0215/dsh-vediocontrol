@@ -6,16 +6,22 @@
 
 ## 安装
 
-从 npm（发布后）：
+从 GitHub 源码安装（当前可用）：
 
 ```
-dsh plugin --profile <你的 profile> add dsh-push-to-talk
+dsh plugin --profile web add github:zl0215/dsh-vediocontrol
 ```
 
-从 GitHub：
+等价的完整 Git 地址写法：
 
 ```
-dsh plugin --profile <你的 profile> add git+https://github.com/zl0215/dsh-vediocontrol.git
+dsh plugin --profile web add git+https://github.com/zl0215/dsh-vediocontrol.git
+```
+
+发布到 npm 之后（暂未发布）也可以：
+
+```
+dsh plugin --profile web add dsh-push-to-talk
 ```
 
 也可以在 DSH 的 **插件 → 安装** 页面填入包名或 Git 地址安装。安装后本 bundle 会：
