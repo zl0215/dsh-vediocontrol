@@ -1,0 +1,8 @@
+node_modules/
+.pnpm-store/
+*.tgz
+.publish/
+test/_scratch/
+*.log
+.DS_Store
+Thumbs.db

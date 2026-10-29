@@ -1,0 +1,14 @@
+# Push-to-talk bundle layer.
+#
+# The shipped voice-input package registers a click-to-record microphone in the
+# composer. This bundle replaces that front end with a press-and-hold one, so
+# the shipped voice UI row is switched off while the bundle is enabled. The
+# host speech-to-text rows (model, provider, Remote bridge) are left untouched:
+# this plugin talks to the same `speechToText` service.
+#
+# Disabling or removing this bundle restores the shipped microphone.
+- id: ui-voice-input
+  disabled: true
+- insert:
+    - id: push-to-talk
+      name: 'dsh-push-to-talk'

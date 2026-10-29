@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH Push to Talk",
+    "zh": "DSH 按住说话"
+  },
+  "description": {
+    "en": "Hold a single hotkey to dictate into DeepSeek Harness — also while another application is focused.",
+    "zh": "按住一个按键说话，即可把语音发送给 DeepSeek Harness；即使正在使用其它软件也可以用。"
+  },
+  "metadata": {
+    "categories": {
+      "voice": {
+        "title": {
+          "en": "Voice",
+          "zh": "语音"
+        }
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-push-to-talk",
+      "title": {
+        "en": "Push to Talk",
+        "zh": "按住说话"
+      },
+      "description": {
+        "en": "Single-key push-to-talk for the composer: hold to record, release to transcribe and send; the reply can appear in a capture-invisible overlay. Needs the voice input backend bundle.",
+        "zh": "输入框的单键按住说话：按住录音、松开识别并发送；回复可显示在录屏不可见的浮窗里。需要语音输入后端插件包。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlB1c2ggdG8gdGFsayI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InB0dC1iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMyYjZjZjYiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjN2I0ZGZmIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSIyIiB5PSIyIiB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHJ4PSIxNiIgZmlsbD0idXJsKCNwdHQtYmcpIi8+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMCIgcj0iMTUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9IjAuMjgiIHN0cm9rZS13aWR0aD0iMiIvPgogIDxyZWN0IHg9IjI3IiB5PSIxNiIgd2lkdGg9IjEwIiBoZWlnaHQ9IjE3IiByeD0iNSIgZmlsbD0iI2ZmZmZmZiIvPgogIDxwYXRoIGQ9Ik0yMiAzMGExMCAxMCAwIDAgMCAyMCAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHBhdGggZD0iTTMyIDQxdjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSI0NiIgY3k9IjQ2IiByPSI3IiBmaWxsPSIjZmY0ZDRmIi8+CiAgPGNpcmNsZSBjeD0iNDYiIGN5PSI0NiIgcj0iMyIgZmlsbD0iI2ZmZmZmZiIvPgo8L3N2Zz4K",
+      "author": "wzl",
+      "metadata": {
+        "category": "voice",
+        "keywords": [
+          "push-to-talk",
+          "hold-to-talk",
+          "dictation",
+          "speech-to-text",
+          "voice",
+          "sensevoice",
+          "windows"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1793266003,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1"
+          }
+        }
+      ]
+    }
+  ]
+}

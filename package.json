@@ -1,0 +1,60 @@
+{
+  "name": "dsh-push-to-talk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Hold-to-talk dictation for DeepSeek Harness: a single global hotkey records speech, sends the transcript to the current session, and mirrors the reply in a capture-invisible on-screen overlay.",
+  "icon": "./icon.svg",
+  "license": "MIT",
+  "author": "wzl",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "push-to-talk",
+    "hold-to-talk",
+    "voice-input",
+    "speech-to-text",
+    "dictation",
+    "sensevoice",
+    "windows"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1",
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/smoke-client.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "hotkey.ps1",
+    "overlay.ps1",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
