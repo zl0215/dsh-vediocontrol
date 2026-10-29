@@ -27,7 +27,7 @@ dsh plugin --profile web add dsh-push-to-talk
 也可以在 DSH 的 **插件 → 安装** 页面填入包名或 Git 地址安装。安装后本 bundle 会：
 
 - 停用内置的点击式语音前端 `ui-voice-input`，改为按住说话按钮 + 单键快捷键；
-- 在 Windows 上按需启动两个本机辅助进程（全局按键监听、回复浮窗），不联网。
+- 在 Windows 上按需启动一个本机辅助进程来监听全局按键（不联网）。
 
 前置条件：已启用 `@deepseek-ai/dsh-experimental-voice-input-bundle`（提供 `speechToText` 与 SenseVoice 模型）；首次使用需在页面里允许一次麦克风权限。
 
@@ -54,7 +54,7 @@ dsh plugin --profile web add dsh-push-to-talk
 
 ## 全局快捷键（离开 DSH 也能用）
 
-默认关闭。打开 **设置 → 通用 → 「全局快捷键（其它软件中也能用）」** 后：
+打开 **设置 → 通用 → 「全局快捷键（其它软件中也能用）」**（默认开启）后：
 
 - 本插件会启动一个本机 PowerShell 辅助进程（`hotkey.ps1`），安装 Windows 低级键盘钩子，**只监听你绑定的那一个键**，不联网、不记录输入，也不拦截按键（其它软件照常收到这个键）。
 - 之后即使你正在用别的软件、DSH 窗口在后台，**按住 F2 说话 → 松开**，识别结果会自动发送到 DSH 当前会话，由助手继续处理。
@@ -66,29 +66,9 @@ dsh plugin --profile web add dsh-push-to-talk
 
 - 目前仅支持 Windows。
 - DSH 窗口**不要最小化**（可以放在其它窗口后面）；最小化时浏览器会节流页面，按键与界面更新可能延迟。
-- 如果任务需要工具调用审批，DHS 会停在审批提示上等你回到窗口确认；想让它全程自动执行，需要在设置里使用更宽松的权限预设。
+- 如果任务需要工具调用审批，DSH 会停在审批提示上等你回到窗口确认；想让它全程自动执行，需要在设置里使用更宽松的权限预设。
 
-## 回复悬浮窗
-
-打开 **设置 → 通用 → 「回复悬浮窗」**（默认开启）后：
-
-- 用全局快捷键（或窗口不在前台时按住麦克风）提问并发送后，插件会记住"这一问"，然后开始监听该会话的回复。
-- 助手每产出一条回复，屏幕上就会显示一个**置顶、不抢焦点、白色背景**的小面板，右上角有「×」取消按钮，只显示这次提问的回答内容——**不会显示历史上下文**。
-- 面板约 **10 秒**后自动消失（`OVERLAY_SECONDS`），点「×」立即关闭；鼠标可以正常点击面板（透明模式除外）。
-- 面板带有 **屏幕捕获排除**：用 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 把它从屏幕共享/录屏里排除，所以在腾讯会议共享**整个屏幕**时对方看不到它，而本机仍然正常可见。
-- 本轮结束（`turn/end`）后停止监听；面板约 10 秒后自动消失，或点击右上角「×」立即关闭。回到 DSH 窗口时会主动收起。
-- 文本过长时截断到约 1200 字符；回复中的代码围栏标记会被去掉，其余按纯文本显示。
-- 实现：Host 侧再启动一个本机 PowerShell/WPF 辅助进程（`overlay.ps1`），通过 stdin 接收 `show <base64>` / `hide` / `quit`。
-
-**关于透明背景的取舍**：Windows 只允许"非逐像素透明"的窗口使用捕获排除。原来那种背景完全透明的窗口无法被排除（实测 `SetWindowDisplayAffinity` 返回错误 8）。因此默认使用白色面板以换取会议共享时的隐私，并且面板可点击以便按取消按钮。如果更想要完全透明背景，可在启动 DSH 前设置环境变量 `DSH_OVERLAY_TRANSPARENT=1`，此时浮窗恢复透明（点击穿透、无取消按钮），但屏幕共享会看到它。
-
-注意：
-
-- 自动隐藏后窗口再次显示时会重新应用捕获排除；窗口隐藏期间 `GetWindowDisplayAffinity` 可能读出 0，再次显示后恢复为 0x11。
-- 屏幕捕获排除是 Windows 10 2004+ 的能力；更旧系统会退化为"捕获画面里显示黑块"（`WDA_MONITOR` 回退）。
-- 若会议软件使用非标准捕获方式（如部分远程桌面/硬件采集），排除可能不生效。
-
-## 辅助进程的约定（`hotkey.ps1`）
+辅助进程的约定（`hotkey.ps1`）：
 
 - 由 Host 以 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File hotkey.ps1` 启动，只设置环境变量 `DSH_PTT_KEY`。
 - stdout 每行一个事件、立即刷新：`ready`（钩子装好）、`down`、`up`、`error <原因>`；自动重复不会重复上报 `down`。
@@ -133,6 +113,15 @@ dsh plugin --profile web add dsh-push-to-talk
 
 本 bundle 的 patch 在启用时会把内置语音前端 `ui-voice-input`（点击开始、再点停止的麦克风）关掉，改用按住说话按钮与快捷键，避免出现两个麦克风。停用或卸载本插件后，内置麦克风自动恢复。已经被语音插件保存的「识别服务 / 识别语言」偏好继续生效；由于内置前端被停用，语音插件详情页里的识别偏好与设备选择面板不再显示（模型已就绪时通常无需再改）。如需改回原前端，停用本插件即可。
 
+## 实验功能：回复浮窗（默认关闭）
+
+这是附带的实验性功能，不属于主要能力，**默认关闭**，只在 Windows 上可用。
+
+- **开关路径**：设置 → 通用 → 「回复浮窗（实验）」。
+- 开启后：用全局快捷键提问时，回答会显示在屏幕上的一个小浮窗里；可点右上角「×」关闭，约 10 秒后自动消失。
+- 关闭后：不再启动浮窗辅助进程，插件只做语音输入，不显示任何浮窗。
+- 实现：可选的 `overlay.ps1` 辅助进程（本机 PowerShell/WPF，通过 stdin 接收要显示的文字）。
+
 ## 本机接口
 
 Host 侧只注册一个仅回环可访问的 JSON 接口（`127.0.0.1` / `::1`），其它地址一律 403：
@@ -144,39 +133,13 @@ POST /push-to-talk/api/prepare         准备模型（可选下载源）
 POST /push-to-talk/api/hotkey/bind     启动/停止全局按键辅助进程（{ enabled, code }）
 GET  /push-to-talk/api/hotkey/state    辅助进程状态
 GET  /push-to-talk/api/hotkey/poll     长轮询按键 down/up 事件（?since=N）
-POST /push-to-talk/api/overlay/arm     开始监听某会话这一次提问的回复（{ sessionId }）
-POST /push-to-talk/api/overlay/show    直接显示一段文字（调试用，{ text }）
-POST /push-to-talk/api/overlay/hide    收起浮窗
-GET  /push-to-talk/api/overlay/state   浮窗状态（ready/armed/visible/lastText）
+POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听某会话这一次提问的回复
+POST /push-to-talk/api/overlay/show    回复浮窗（实验）：直接显示一段文字（调试用）
+POST /push-to-talk/api/overlay/hide    回复浮窗（实验）：收起浮窗
+GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 ```
 
 录音数据只在本次请求内存在，不写入会话事件或附件。以上接口同样只接受本机回环访问。
-
-## 发布到插件市场
-
-本仓库已经是可发布状态（npm 包名 `dsh-push-to-talk`，带 `dsh.bundle.patch` 与 `dsh.client`）。发布步骤：
-
-1. **GitHub**：新建仓库后推送本目录（仓库根目录就是本插件包）：
-
-   ```
-   git init -b main
-   git add .
-   git commit -m "feat: push-to-talk plugin for DeepSeek Harness"
-   git remote add origin https://github.com/zl0215/dsh-vediocontrol.git
-   git push -u origin main
-   ```
-
-2. **npm**：`npm login` 后 `npm publish`（`npm pack --dry-run` 可先检查打包内容）。
-
-3. **DSH Plugin Hub（dsh-plugin.org）**：在 <https://dsh-plugin.org/zh/submit> 提交仓库地址，审核通过后即可在社区市场的「发现」里安装。
-
-4. **官方 Discover 市场索引（可选）**：仓库里的 `market/index.json` 是格式 1 的市场索引（已用官方校验器 `@deepseek-ai/dsh-plugin-market-index` 验证通过），其中插件指向 npm 版本。把仓库发布到 GitHub 后，在 DSH 中启用 `@deepseek-ai/dsh-experimental-plugin-market-bundle`，然后在 **设置 / 发现** 里添加索引地址：
-
-   ```
-   https://raw.githubusercontent.com/zl0215/dsh-vediocontrol/main/market/index.json
-   ```
-
-   这个索引默认用 Git 源安装：`market/index.json` 里的 `versions[0].source.commit` 必须指向仓库里一个已推送的提交（当前为首次发布提交）。发新版时依次修改 `version`、`publishTimestamp`（Unix 秒）与 `source.commit`，提交推送后，索引地址内容自动更新。
 
 ## 已知限制
 
@@ -184,48 +147,47 @@ GET  /push-to-talk/api/overlay/state   浮窗状态（ready/armed/visible/lastTe
 - 页面内快捷键只在聊天输入框存在时生效（新建会话/设置页等无输入框的页面不会触发）；全局快捷键需要当前会话的输入框存在，DSH 窗口运行中即可。
 - 全局快捷键仅支持 Windows，且会额外运行一个本机 PowerShell 辅助进程；DSH 窗口最小化时页面会被节流，建议保持窗口可见（可在其它窗口后面）。
 - 页面内按住期间切换会话、页面隐藏或浏览器失焦会结束/取消本次录音；全局录音不受窗口失焦影响。
+- 回复浮窗为实验功能，默认关闭，仅 Windows 可用。
 - 若语音识别服务不可用（语音输入插件包被停用），按钮会以半透明提示，输入框下方给出说明。
 
 ## 文件
 
-- `index.js` — Host 插件：注册回环 JSON 接口，桥接 `speechToText`；管理全局按键与回复浮窗两个辅助进程，监听会话事件把回复送到浮窗。
+- `index.js` — Host 插件：注册回环 JSON 接口，桥接 `speechToText`；管理全局按键辅助进程，并（实验功能开启时）把回复送到浮窗。
 - `hotkey.ps1` — Windows 辅助进程：低级键盘钩子，把绑定的单个按键的按下/松开写到 stdout。
-- `overlay.ps1` — Windows 辅助进程：WPF 白色置顶面板（带取消按钮、录屏不可见），从 stdin 接收要显示的文字。
 - `client.js` — 浏览器插件：按住手势与单键按住、全局按键事件订阅、录音与 16 kHz 重采样、识别状态条、设置行、插入并发送。
+- `overlay.ps1` — 实验功能：Windows WPF 小浮窗（默认关闭，仅开启回复浮窗时启动）。
 - `market/index.json` — 官方插件市场索引（格式 1，已通过官方校验器）。
 - `cordis.patch.yml` — 停用内置语音前端并插入本插件行。
 - `locale/*.json`、`icon.svg` — 插件管理器中的标题、描述与图标。
 - `NOTICE.md` — 录音与重采样代码的上游归属说明（MIT）。
-- `test/` — 离线冒烟测试与两个 Windows 辅助进程的探针测试。
+- `test/` — 离线冒烟测试与 Windows 辅助进程的探针测试。
 
 ## 验证
 
 已在当前 `desktop` 配置中验证：
 
 - `node --check` 通过（`index.js`、`client.js`）。
-- 全局按键辅助进程 `hotkey.ps1` 的独立冒烟测试通过（`test/hotkey-smoke.ps1`，66 项断言）：18 个可绑定按键的
-  `ready/down/up`、非目标键不触发、长按自动重复只上报一次、20 秒存活与继续工作、进程结束释放钩子；
-  `spawn → ready` 实测 0.65–1.13 秒。
-- Host 端到端：`POST /hotkey/bind` 启动辅助进程并很快 `ready`；用 `SendInput` 注入一次 F2 后，
-  `GET /hotkey/poll` 返回 `down` / `up` 事件；重复 bind 复用进程不重启；切换按键会按新键重启。
-- 离线冒烟测试通过（`node test/smoke-client.mjs`）：加载浏览器模块、执行 `apply()`、注册五个入口
-  （`conversation.input.right#push-to-talk-mic`、`conversation.composer.dock#push-to-talk-status`、
-  `settings.general.item#push-to-talk-shortcut/-keep-warm/-global`）、渲染组件、拦截默认 F2 按键、
-  重新绑定按键并持久化、切换「麦克风常驻」并持久化、开启「全局快捷键」后向 Host 绑定按键并启动事件长轮询。
-- `GET /push-to-talk/api/status` 返回真实的识别服务快照（SenseVoiceSmall (INT8)，`phase: ready`，
-  语言 `auto`，上限 120 秒 / 4 MiB）。
-- `POST /push-to-talk/api/transcribe` 用 1 秒 16 kHz WAV 端到端调用 `speechToText.transcribe`
-  成功返回（`{"ok":true,"text":"","audioSeconds":1,...}`）。
-- 已连接页面中相关入口的占用者（occupant）均为 `active`，内置 `ui-voice-input` 行已停用。
-- 回复浮窗 `overlay.ps1` 用独立探针实测（`test/overlay-probe.ps1`）：spawn→ready 约 0.7 秒；窗口扩展样式
-  实测 `0x08000088`（TOPMOST + TOOLWINDOW + NOACTIVATE，置顶、不抢焦点、可点击）；**捕获排除实测
-  `affinity=0x11`**；白色面板显示可见、前台窗口不变；自动隐藏、再次 show、hide、quit 优雅退出（exit 0）。
-- 实时集成验证：通过 Host 接口显示的白色浮窗（独立进程）在系统里枚举到 `affinity=0x11` 且 `visible=True`；
-  约 10 秒后窗口自动隐藏（枚举不到可捕获排除的可见窗口）。
-- Host 侧 `POST /overlay/show` 中文文本经 UTF-8 显示成功（`/overlay/state.lastText` 一致）；
-  `POST /overlay/arm` 后状态为 `armed:true`，并做过一次真实会话回复镜像演练。
-- 待用户实测：离开 DSH、在其它软件中按 F2 的完整链路（按键 → 识别 → 发送 → 浮窗显示回复 → 助手执行）。
-- 浏览器内的实际外观与真实录音效果由用户确认；本环境没有浏览器控制能力。
+- 离线冒烟测试通过（`node test/smoke-client.mjs`）：加载浏览器模块、执行 `apply()`、注册各入口、渲染组件、
+  拦截默认 F2 按键、重新绑定按键并持久化、切换「麦克风常驻」「全局快捷键」「回复浮窗」并持久化。
+- 全局按键辅助进程 `hotkey.ps1` 独立测试通过：18 个可绑定按键的 `ready/down/up`、非目标键不触发、
+  长按自动重复只上报一次、20 秒存活与继续工作；`spawn → ready` 实测 0.65–1.13 秒。
+- Host 端到端：`/hotkey/bind` 启动辅助进程并很快 ready；注入一次 F2 后 `/hotkey/poll` 返回 down/up；重复 bind 复用进程。
+- `GET /push-to-talk/api/status` 返回真实识别服务快照（SenseVoiceSmall (INT8)，`phase: ready`，语言 `auto`）。
+- `POST /push-to-talk/api/transcribe` 用 1 秒 16 kHz WAV 端到端返回 `{"ok":true,"text":"","audioSeconds":1,...}`。
+- 回复浮窗（实验）探针测试通过：显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7 秒就绪）。
+- 待用户实测：离开 DSH、在其它软件中按 F2 的完整链路（按键 → 识别 → 发送 → 助手执行）。
 
-修改 `client.js` 后浏览器会热加载新的 client 产物（当前页面已自动生效）；Host 侧
-`index.js` 的改动需要重启应用才会重新加载。
+## 发布到插件市场
+
+本仓库已经是可发布状态（npm 包名 `dsh-push-to-talk`，带 `dsh.bundle.patch` 与 `dsh.client`）。发布步骤：
+
+1. **GitHub**：仓库为 <https://github.com/zl0215/dsh-vediocontrol>，根目录就是本插件包。
+2. **npm**（可选）：`npm login` 后 `npm publish`（`npm pack --dry-run` 可先检查打包内容）。
+3. **DSH Plugin Hub（dsh-plugin.org）**：在 <https://dsh-plugin.org/zh/submit> 提交仓库地址，审核通过后即可在社区市场找到。
+4. **官方 Discover 市场索引（可选）**：仓库里的 `market/index.json` 是格式 1 的市场索引（已用官方校验器验证）。启用 `@deepseek-ai/dsh-experimental-plugin-market-bundle` 后，在设置/发现里添加索引地址：
+
+   ```
+   https://raw.githubusercontent.com/zl0215/dsh-vediocontrol/main/market/index.json
+   ```
+
+   发新版时同步修改 `market/index.json` 里的 `version`、`publishTimestamp`（Unix 秒）与 `versions[0].source.commit`（指向已推送的提交）。

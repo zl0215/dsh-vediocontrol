@@ -109,10 +109,10 @@ window.__ModuleLoader__.load({
     }
     function loadReplyOverlay() {
       try {
-        // On by default too; the switch stores an explicit '0' to disable it.
-        return localStorage.getItem(OVERLAY_STORAGE) !== '0'
+        // Experimental and off by default; the switch stores '1' to enable it.
+        return localStorage.getItem(OVERLAY_STORAGE) === '1'
       } catch {
-        return true
+        return false
       }
     }
     function storeReplyOverlay(value) {
@@ -187,10 +187,9 @@ window.__ModuleLoader__.load({
       globalStarting: '正在启动全局快捷键…',
       globalTrouble: '需要在 Windows 上运行一个本机辅助进程（不联网，只监听一个按键）。',
       globalUnsupported: '当前系统暂不支持全局快捷键（仅 Windows）。',
-      overlayTitle: '回复悬浮窗',
-      overlayDescOn: '说完话、松开按键后，回复会以透明浮窗显示在屏幕上（即使你在其它软件里）。',
-      overlayDescOff: '开启后，用全局快捷键提问时，回复会以透明、置顶、不挡鼠标的浮窗显示在屏幕上。',
-      overlayWarn: '注意：如果正在共享整个屏幕，浮窗也会被对方看到。',
+      overlayTitle: '回复浮窗（实验）',
+      overlayDescOn: '已开启：回答会显示在屏幕上的小浮窗里（实验功能，可随时关闭）。',
+      overlayDescOff: '实验功能，默认关闭：开启后用全局快捷键提问时，把回答显示在屏幕小浮窗里。',
       keyControlLeft: '左 Ctrl',
       keyControlRight: '右 Ctrl',
       keyAltLeft: '左 Alt',
@@ -265,10 +264,9 @@ window.__ModuleLoader__.load({
       globalStarting: 'Starting the global shortcut…',
       globalTrouble: 'Runs a local Windows helper process that listens to one key only and never uses the network.',
       globalUnsupported: 'Global shortcuts are Windows-only for now.',
-      overlayTitle: 'Reply overlay',
-      overlayDescOn: 'After you dictate, replies appear in a transparent overlay on screen, even while you use another application.',
-      overlayDescOff: 'When on, a reply to a global-shortcut question appears in a transparent, always-on-top, click-through overlay.',
-      overlayWarn: 'Note: while sharing your entire screen, the overlay is visible to others too.',
+      overlayTitle: 'Reply overlay (experimental)',
+      overlayDescOn: 'On: replies are shown in a small on-screen panel (experimental; can be turned off anytime).',
+      overlayDescOff: 'Experimental and off by default. When on, a reply to a global-shortcut question appears in a small on-screen panel.',
       keyControlLeft: 'Left Ctrl',
       keyControlRight: 'Right Ctrl',
       keyAltLeft: 'Left Alt',
@@ -2008,7 +2006,7 @@ window.__ModuleLoader__.load({
         )
       }
 
-      /** Settings → General row: show replies in a transparent OS overlay. */
+      /** Settings → General row: experimental on-screen reply panel. */
       function OverlayRow() {
         useLocale()
         const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
@@ -2026,7 +2024,6 @@ window.__ModuleLoader__.load({
               { className: 'dpt-setting-desc' },
               state.overlayReplies ? t('overlayDescOn') : t('overlayDescOff'),
             ),
-            state.overlayReplies ? h('span', { className: 'dpt-setting-warn' }, t('overlayWarn')) : null,
           ),
           h(
             'div',

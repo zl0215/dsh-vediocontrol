@@ -2,7 +2,7 @@
   "name": "dsh-push-to-talk",
   "version": "0.1.0",
   "type": "module",
-  "description": "Hold-to-talk dictation for DeepSeek Harness: a single global hotkey records speech, sends the transcript to the current session, and mirrors the reply in a capture-invisible on-screen overlay.",
+  "description": "Hold-and-talk dictation for DeepSeek Harness: hold one key (or the composer microphone) to record, release to transcribe and send the message to the current session.",
   "icon": "./icon.svg",
   "license": "MIT",
   "author": "wzl",
