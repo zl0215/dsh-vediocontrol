@@ -6,6 +6,11 @@
   "icon": "./icon.svg",
   "license": "MIT",
   "author": "wzl",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zl0215/dsh-vediocontrol.git"
+  },
+  "homepage": "https://github.com/zl0215/dsh-vediocontrol#readme",
   "keywords": [
     "dsh",
     "dsh-plugin",

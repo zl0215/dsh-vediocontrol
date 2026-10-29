@@ -15,7 +15,7 @@ dsh plugin --profile <你的 profile> add dsh-push-to-talk
 从 GitHub：
 
 ```
-dsh plugin --profile <你的 profile> add git+https://github.com/<owner>/dsh-push-to-talk.git
+dsh plugin --profile <你的 profile> add git+https://github.com/zl0215/dsh-vediocontrol.git
 ```
 
 也可以在 DSH 的 **插件 → 安装** 页面填入包名或 Git 地址安装。安装后本 bundle 会：
@@ -156,7 +156,7 @@ GET  /push-to-talk/api/overlay/state   浮窗状态（ready/armed/visible/lastTe
    git init -b main
    git add .
    git commit -m "feat: push-to-talk plugin for DeepSeek Harness"
-   git remote add origin https://github.com/<owner>/dsh-push-to-talk.git
+   git remote add origin https://github.com/zl0215/dsh-vediocontrol.git
    git push -u origin main
    ```
 
@@ -167,7 +167,7 @@ GET  /push-to-talk/api/overlay/state   浮窗状态（ready/armed/visible/lastTe
 4. **官方 Discover 市场索引（可选）**：仓库里的 `market/index.json` 是格式 1 的市场索引（已用官方校验器 `@deepseek-ai/dsh-plugin-market-index` 验证通过），其中插件指向 npm 版本。把仓库发布到 GitHub 后，在 DSH 中启用 `@deepseek-ai/dsh-experimental-plugin-market-bundle`，然后在 **设置 / 发现** 里添加索引地址：
 
    ```
-   https://raw.githubusercontent.com/<owner>/dsh-push-to-talk/main/market/index.json
+   https://raw.githubusercontent.com/zl0215/dsh-vediocontrol/main/market/index.json
    ```
 
    发新版时同步修改 `market/index.json` 里的 `version` 与 `publishTimestamp`（Unix 秒）。
