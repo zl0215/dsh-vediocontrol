@@ -170,7 +170,7 @@ GET  /push-to-talk/api/overlay/state   浮窗状态（ready/armed/visible/lastTe
    https://raw.githubusercontent.com/zl0215/dsh-vediocontrol/main/market/index.json
    ```
 
-   发新版时同步修改 `market/index.json` 里的 `version` 与 `publishTimestamp`（Unix 秒）。
+   这个索引默认用 Git 源安装：`market/index.json` 里的 `versions[0].source.commit` 必须指向仓库里一个已推送的提交（当前为首次发布提交）。发新版时依次修改 `version`、`publishTimestamp`（Unix 秒）与 `source.commit`，提交推送后，索引地址内容自动更新。
 
 ## 已知限制
 

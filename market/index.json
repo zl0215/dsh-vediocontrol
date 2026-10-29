@@ -50,13 +50,18 @@
           "version": "0.1.0",
           "publishTimestamp": 1793266003,
           "source": {
-            "type": "npm"
+            "type": "git",
+            "url": "https://github.com/zl0215/dsh-vediocontrol",
+            "commit": "b6cc3595e1dc2414e04509e8c928d38727b00c4e"
           },
           "engines": {
             "dsh": ">=0.2.0-rc.1"
           }
         }
-      ]
+      ],
+      "repository": {
+        "url": "https://github.com/zl0215/dsh-vediocontrol"
+      }
     }
   ]
 }
