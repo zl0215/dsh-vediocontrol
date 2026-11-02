@@ -1,28 +1,29 @@
-# overlay.ps1 - reply overlay for the DSH push-to-talk plugin.
+# overlay.ps1 - streaming reply overlay for the DSH push-to-talk plugin.
 #
 # Runs under Windows PowerShell 5.1 (launched as):
 #   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <dir>\overlay.ps1
 #
 # Shows the assistant's answer as an always-on-top panel while another
-# application has focus. The panel has a white background, a cancel button and
-# auto-hides after DSH_OVERLAY_SECONDS (default 10).
-#
-# Screen-share privacy: the window is excluded from screen capture with
-# SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE), so screen sharing/recording
-# tools (for example Tencent Meeting sharing the whole screen) do not see it
-# while the local user still does. Windows only supports that exclusion for
-# windows without per-pixel transparency, hence the solid white panel by
-# default. Set DSH_OVERLAY_TRANSPARENT=1 for the old transparent look
-# (capturable by screen shares).
+# application has focus. Text can be updated while the answer streams in.
 #
 # Commands on stdin, one per line (ASCII):
-#   show <base64-of-utf8-text>   display the text, restart the auto-hide timer
-#   hide                         hide the window
-#   quit                         exit (stdin EOF also exits)
+#   stream <base64-of-utf8-text>  update the streaming text (window stays visible)
+#   show <base64-of-utf8-text>    final text, restart the auto-hide timer
+#   hide                          hide the window
+#   quit                          exit (stdin EOF also exits)
+#
+# Environment:
+#   DSH_OVERLAY_SECONDS      auto-hide delay after the final text (default 10, min 3)
+#   DSH_OVERLAY_OPACITY      background opacity 0-100 (default 92; 100 = opaque panel)
+#   DSH_OVERLAY_FONT         font family name (default "Microsoft YaHei UI")
+#   DSH_OVERLAY_FONT_SIZE    text size in px (default 20, clamped 10-40)
+#
+# Opaque (100%) windows are excluded from screen capture where Windows supports
+# it; translucent windows use per-pixel transparency, which cannot be excluded.
 #
 # Stdout protocol (one ASCII line, flushed):
 #   ready                 window created and dispatcher running
-#   info ...              best-effort diagnostics
+#   info ...              diagnostics
 #   error <reason>        fatal setup/runtime failure; exits 1
 
 $ErrorActionPreference = 'Stop'
@@ -33,14 +34,24 @@ function Write-Line {
     [Console]::Out.Flush()
 }
 
-$Seconds = 10
-if (-not [string]::IsNullOrEmpty($env:DSH_OVERLAY_SECONDS)) {
-    $parsed = 0
-    if ([int]::TryParse($env:DSH_OVERLAY_SECONDS, [ref]$parsed)) { $Seconds = $parsed }
+function Read-IntEnv {
+    param([string]$Name, [int]$Default, [int]$Min, [int]$Max)
+    $raw = [Environment]::GetEnvironmentVariable($Name)
+    $value = $Default
+    if (-not [string]::IsNullOrEmpty($raw)) {
+        $parsed = 0
+        if ([int]::TryParse($raw, [ref]$parsed)) { $value = $parsed }
+    }
+    if ($value -lt $Min) { $value = $Min }
+    if ($value -gt $Max) { $value = $Max }
+    return $value
 }
-if ($Seconds -lt 3) { $Seconds = 3 }
 
-$Transparent = ($env:DSH_OVERLAY_TRANSPARENT -eq '1')
+$Seconds = Read-IntEnv 'DSH_OVERLAY_SECONDS' 10 3 600
+$Opacity = Read-IntEnv 'DSH_OVERLAY_OPACITY' 92 0 100
+$FontSize = Read-IntEnv 'DSH_OVERLAY_FONT_SIZE' 20 10 40
+$Font = $env:DSH_OVERLAY_FONT
+if ([string]::IsNullOrEmpty($Font)) { $Font = 'Microsoft YaHei UI' }
 
 $OverlaySource = @'
 using System;
@@ -50,7 +61,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using System.Runtime.InteropServices;
 
@@ -60,7 +70,6 @@ namespace DshPtt
     {
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_TOPMOST = 0x00000008;
-        private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_NOACTIVATE = 0x08000000;
 
@@ -81,18 +90,29 @@ namespace DshPtt
 
         private static Window _window;
         private static TextBlock _text;
-        private static TextBlock _outline;
-        private static Button _close;
         private static DispatcherTimer _timer;
+        private static DispatcherTimer _safety;
         private static Dispatcher _dispatcher;
         private static int _seconds = 10;
-        private static bool _transparent = false;
+        private static bool _opaque = true;
 
-        public static void Run(int seconds, bool transparent)
+        public static void Run(int seconds, int opacity, string fontName, int fontSize)
         {
             _seconds = seconds < 3 ? 3 : seconds;
-            _transparent = transparent;
+            _opaque = opacity >= 99;
             _dispatcher = Dispatcher.CurrentDispatcher;
+
+            var family = new FontFamily(fontName);
+            double size = fontSize;
+            double maxWidth = Math.Max(320, SystemParameters.WorkArea.Width * 0.55);
+
+            var foreground = new SolidColorBrush(Color.FromRgb(24, 24, 28));
+            var background = _opaque
+                ? (Brush)Brushes.White
+                : (Brush)new SolidColorBrush(Color.FromArgb((byte)Math.Round(opacity * 255.0 / 100.0), 255, 255, 255));
+            var borderBrush = _opaque
+                ? (Brush)new SolidColorBrush(Color.FromRgb(210, 210, 216))
+                : new SolidColorBrush(Color.FromArgb((byte)Math.Round(opacity * 255.0 / 100.0), 120, 120, 132));
 
             _window = new Window();
             _window.WindowStyle = WindowStyle.None;
@@ -103,83 +123,50 @@ namespace DshPtt
             _window.SizeToContent = SizeToContent.WidthAndHeight;
             _window.WindowStartupLocation = WindowStartupLocation.Manual;
             _window.Focusable = false;
-            // Per-pixel transparency blocks SetWindowDisplayAffinity on Windows.
-            // Opaque mode keeps the white panel excluded from screen capture.
-            _window.AllowsTransparency = transparent;
-            // Transparent mode stays click-through; the opaque panel is
-            // interactive so its cancel button can be pressed.
-            _window.IsHitTestVisible = !transparent;
-            _window.Background = transparent ? Brushes.Transparent : Brushes.White;
-
-            var fontFamily = new FontFamily("Microsoft YaHei UI");
-            double fontSize = 20;
-            double maxWidth = Math.Max(320, SystemParameters.WorkArea.Width * 0.55);
-
-            _outline = new TextBlock();
-            _outline.FontFamily = fontFamily;
-            _outline.FontSize = fontSize;
-            _outline.Foreground = Brushes.Black;
-            _outline.TextWrapping = TextWrapping.Wrap;
-            _outline.TextAlignment = TextAlignment.Left;
-            _outline.MaxWidth = maxWidth;
-            _outline.Visibility = transparent ? Visibility.Visible : Visibility.Collapsed;
-            if (transparent)
-            {
-                _outline.Effect = new DropShadowEffect
-                {
-                    Color = Colors.Black,
-                    BlurRadius = 9,
-                    ShadowDepth = 0,
-                    Opacity = 1.0
-                };
-            }
+            _window.IsHitTestVisible = true;
+            // Per-pixel transparency supports the adjustable background; opaque
+            // windows can additionally be excluded from screen capture.
+            _window.AllowsTransparency = !_opaque;
+            _window.Background = _opaque ? (Brush)Brushes.White : Brushes.Transparent;
 
             _text = new TextBlock();
-            _text.FontFamily = fontFamily;
-            _text.FontSize = fontSize;
-            _text.Foreground = transparent ? Brushes.White : new SolidColorBrush(Color.FromRgb(24, 24, 28));
+            _text.FontFamily = family;
+            _text.FontSize = size;
+            _text.Foreground = foreground;
             _text.TextWrapping = TextWrapping.Wrap;
             _text.TextAlignment = TextAlignment.Left;
             _text.MaxWidth = maxWidth;
             _text.Margin = new Thickness(0, 0, 26, 0);
 
             var grid = new Grid();
-            grid.Children.Add(_outline);
             grid.Children.Add(_text);
 
-            _close = new Button();
-            _close.Content = "×";
-            _close.Width = 22;
-            _close.Height = 22;
-            _close.Padding = new Thickness(0);
-            _close.FontSize = 15;
-            _close.FontWeight = FontWeights.Bold;
-            _close.HorizontalAlignment = HorizontalAlignment.Right;
-            _close.VerticalAlignment = VerticalAlignment.Top;
-            _close.Foreground = transparent ? Brushes.White : new SolidColorBrush(Color.FromRgb(90, 90, 100));
-            _close.Background = Brushes.Transparent;
-            _close.BorderThickness = new Thickness(0);
-            _close.Cursor = System.Windows.Input.Cursors.Hand;
-            _close.Focusable = false;
-            _close.ToolTip = "取消";
-            _close.Click += delegate { HideText(); };
-            _close.Visibility = transparent ? Visibility.Collapsed : Visibility.Visible;
-            grid.Children.Add(_close);
+            var close = new Button();
+            close.Content = "×";
+            close.Width = 22;
+            close.Height = 22;
+            close.Padding = new Thickness(0);
+            close.FontSize = 15;
+            close.FontWeight = FontWeights.Bold;
+            close.HorizontalAlignment = HorizontalAlignment.Right;
+            close.VerticalAlignment = VerticalAlignment.Top;
+            close.Foreground = new SolidColorBrush(Color.FromRgb(90, 90, 100));
+            close.Background = Brushes.Transparent;
+            close.BorderThickness = new Thickness(0);
+            close.Cursor = System.Windows.Input.Cursors.Hand;
+            close.Focusable = false;
+            close.ToolTip = "取消";
+            close.Click += delegate { HideText(); };
+            grid.Children.Add(close);
 
-            if (transparent)
-            {
-                _window.Content = grid;
-            }
-            else
-            {
-                var border = new Border();
-                border.Background = Brushes.White;
-                border.BorderBrush = new SolidColorBrush(Color.FromRgb(210, 210, 216));
-                border.BorderThickness = new Thickness(1);
-                border.Padding = new Thickness(14, 10, 12, 12);
-                border.Child = grid;
-                _window.Content = border;
-            }
+            var border = new Border();
+            border.Background = background;
+            border.BorderBrush = borderBrush;
+            border.BorderThickness = new Thickness(1);
+            border.CornerRadius = new CornerRadius(_opaque ? 0 : 10);
+            border.Padding = new Thickness(14, 10, 12, 12);
+            border.Child = grid;
+            _window.Content = border;
 
             _window.SizeChanged += delegate { Position(); };
             _window.SourceInitialized += delegate { ApplyWindowStyles(); };
@@ -189,6 +176,14 @@ namespace DshPtt
             _timer.Tick += delegate
             {
                 _timer.Stop();
+                if (_window != null) _window.Hide();
+            };
+
+            _safety = new DispatcherTimer();
+            _safety.Interval = TimeSpan.FromSeconds(120);
+            _safety.Tick += delegate
+            {
+                _safety.Stop();
                 if (_window != null) _window.Hide();
             };
 
@@ -218,9 +213,6 @@ namespace DshPtt
                 if (handle == IntPtr.Zero) return;
                 int style = GetWindowLong(handle, GWL_EXSTYLE);
                 int next = style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-                // Click-through only in the transparent mode; the white panel
-                // must receive clicks for its cancel button.
-                if (_transparent) next |= WS_EX_TRANSPARENT;
                 if (next != style) SetWindowLong(handle, GWL_EXSTYLE, next);
             }
             catch { }
@@ -228,29 +220,21 @@ namespace DshPtt
         }
 
         /// <summary>
-        /// Keep the panel out of screen shares and recordings. WDA_EXCLUDEFROMCAPTURE
-        /// needs Windows 10 2004+ and a window without per-pixel transparency; the
-        /// older WDA_MONITOR is the fallback (capture shows a black hole instead).
+        /// Exclusion from screen capture is only possible for the opaque panel;
+        /// translucent windows use per-pixel transparency and remain capturable.
         /// </summary>
         private static void ApplyCaptureExclusion()
         {
+            if (!_opaque) return;
             try
             {
                 IntPtr handle = new WindowInteropHelper(_window).Handle;
                 if (handle == IntPtr.Zero) return;
                 uint current;
                 if (GetWindowDisplayAffinity(handle, out current) && current == WDA_EXCLUDEFROMCAPTURE) return;
-                if (SetWindowDisplayAffinity(handle, WDA_EXCLUDEFROMCAPTURE))
-                {
-                    WriteLine("info capture-exclusion excluded");
-                    return;
-                }
+                if (SetWindowDisplayAffinity(handle, WDA_EXCLUDEFROMCAPTURE)) return;
                 int excludeError = Marshal.GetLastWin32Error();
-                if (SetWindowDisplayAffinity(handle, WDA_MONITOR))
-                {
-                    WriteLine("info capture-exclusion monitor-fallback " + excludeError);
-                    return;
-                }
+                if (SetWindowDisplayAffinity(handle, WDA_MONITOR)) return;
                 int monitorError = Marshal.GetLastWin32Error();
                 WriteLine("info capture-exclusion failed " + excludeError + "," + monitorError);
             }
@@ -269,17 +253,22 @@ namespace DshPtt
             catch { }
         }
 
+        private static void Present(string text)
+        {
+            _text.Text = text;
+            _window.Show();
+            _window.UpdateLayout();
+            ApplyCaptureExclusion();
+            Position();
+        }
+
         private static void ShowText(string text)
         {
             try
             {
                 if (string.IsNullOrEmpty(text)) return;
-                _text.Text = text;
-                _outline.Text = text;
-                _window.Show();
-                _window.UpdateLayout();
-                ApplyCaptureExclusion();
-                Position();
+                Present(text);
+                _safety.Stop();
                 _timer.Stop();
                 _timer.Start();
             }
@@ -289,11 +278,30 @@ namespace DshPtt
             }
         }
 
+        private static void StreamText(string text)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(text)) return;
+                Present(text);
+                // While the answer streams the panel stays on screen; the final
+                // "show" starts the auto-hide countdown.
+                _timer.Stop();
+                _safety.Stop();
+                _safety.Start();
+            }
+            catch (Exception error)
+            {
+                WriteLine("error stream-failed " + error.Message);
+            }
+        }
+
         private static void HideText()
         {
             try
             {
                 _timer.Stop();
+                _safety.Stop();
                 if (_window != null) _window.Hide();
             }
             catch { }
@@ -304,6 +312,7 @@ namespace DshPtt
             try
             {
                 _timer.Stop();
+                _safety.Stop();
                 if (_window != null) _window.Close();
             }
             catch { }
@@ -333,13 +342,19 @@ namespace DshPtt
                         Post(Shutdown);
                         return;
                     }
-                    if (line.StartsWith("show ", StringComparison.Ordinal))
+                    bool streaming = line.StartsWith("stream ", StringComparison.Ordinal);
+                    bool final = line.StartsWith("show ", StringComparison.Ordinal);
+                    if (streaming || final)
                     {
                         try
                         {
-                            string payload = line.Substring(5);
+                            string payload = line.Substring(streaming ? 7 : 5);
                             string text = Encoding.UTF8.GetString(Convert.FromBase64String(payload));
-                            Post(delegate { ShowText(text); });
+                            Post(delegate
+                            {
+                                if (streaming) StreamText(text);
+                                else ShowText(text);
+                            });
                         }
                         catch
                         {
@@ -372,7 +387,7 @@ catch {
 }
 
 try {
-    [DshPtt.ReplyOverlay]::Run($Seconds, $Transparent)
+    [DshPtt.ReplyOverlay]::Run($Seconds, $Opacity, $Font, $FontSize)
 }
 catch {
     Write-Line 'error run-failed'

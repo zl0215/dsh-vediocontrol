@@ -40,6 +40,10 @@ const HOTKEY_EVENT_HISTORY = 32
 const OVERLAY_READY_TIMEOUT_MS = 20_000
 const OVERLAY_MAX_CHARS = 1200
 const OVERLAY_SECONDS = 10
+const OVERLAY_DEFAULT_OPACITY = 92
+const OVERLAY_DEFAULT_FONT = 'Microsoft YaHei UI'
+const OVERLAY_DEFAULT_FONT_SIZE = 20
+const OVERLAY_STREAM_FLUSH_MS = 120
 const HOTKEY_KEYS = new Set([
   'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
   'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight',
@@ -307,6 +311,13 @@ function createOverlayBridge(ctx) {
   let armedSession = null
   let lastText = ''
   let visible = false
+  let streamText = ''
+  let flushTimer = null
+  const config = {
+    opacity: OVERLAY_DEFAULT_OPACITY,
+    fontFamily: OVERLAY_DEFAULT_FONT,
+    fontSize: OVERLAY_DEFAULT_FONT_SIZE,
+  }
   const waiters = new Set()
 
   const state = () => ({
@@ -315,6 +326,7 @@ function createOverlayBridge(ctx) {
     armed: armedSession !== null,
     visible,
     lastText: lastText.slice(0, 80),
+    config: { ...config },
   })
 
   function notify() {
@@ -338,7 +350,13 @@ function createOverlayBridge(ctx) {
         powershellPath(),
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', OVERLAY_SCRIPT],
         {
-          env: { ...process.env, DSH_OVERLAY_SECONDS: String(OVERLAY_SECONDS) },
+          env: {
+            ...process.env,
+            DSH_OVERLAY_SECONDS: String(OVERLAY_SECONDS),
+            DSH_OVERLAY_OPACITY: String(config.opacity),
+            DSH_OVERLAY_FONT: config.fontFamily,
+            DSH_OVERLAY_FONT_SIZE: String(config.fontSize),
+          },
           windowsHide: true,
           stdio: ['pipe', 'pipe', 'pipe'],
         },
@@ -437,17 +455,26 @@ function createOverlayBridge(ctx) {
     return false
   }
 
-  function show(text) {
+  function writeOverlay(prefix, text) {
     const value = normalizeOverlayText(text)
     if (value === '') return
     lastText = value
     void ensureStarted().then((started) => {
       if (!started) return
-      if (writeLine('show ' + Buffer.from(value, 'utf8').toString('base64'))) {
+      if (writeLine(prefix + ' ' + Buffer.from(value, 'utf8').toString('base64'))) {
         visible = true
         notify()
       }
     })
+  }
+
+  function show(text) {
+    writeOverlay('show', text)
+  }
+
+  /** Live update while the assistant is still writing; keeps the panel visible. */
+  function stream(text) {
+    writeOverlay('stream', text)
   }
 
   function hide() {
@@ -457,18 +484,71 @@ function createOverlayBridge(ctx) {
     }
   }
 
+  function clearStream() {
+    streamText = ''
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+  }
+
+  /** Coalesce text deltas so the helper redraws at most every ~120 ms. */
+  function scheduleStream() {
+    if (flushTimer !== null) return
+    flushTimer = setTimeout(() => {
+      flushTimer = null
+      if (streamText !== '') stream(streamText)
+    }, OVERLAY_STREAM_FLUSH_MS)
+  }
+
+  function configure(patch) {
+    if (patch === null || typeof patch !== 'object') return state()
+    if (typeof patch.opacity === 'number' && Number.isFinite(patch.opacity)) {
+      config.opacity = Math.max(0, Math.min(100, Math.round(patch.opacity)))
+    }
+    if (typeof patch.fontFamily === 'string' && patch.fontFamily.trim() !== '' && patch.fontFamily.length <= 64) {
+      config.fontFamily = patch.fontFamily.trim()
+    }
+    if (typeof patch.fontSize === 'number' && Number.isFinite(patch.fontSize)) {
+      config.fontSize = Math.max(10, Math.min(40, Math.round(patch.fontSize)))
+    }
+    // The helper reads its appearance from the environment at startup, so the
+    // next show spawns a fresh one with the new opacity and font.
+    disposeChild()
+    notify()
+    return state()
+  }
+
   /** Arm one session: its next assistant replies are mirrored on screen. */
   function arm(sessionId) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return false
     armedSession = sessionId
     lastText = ''
+    clearStream()
     show('正在处理你的请求…')
     return true
   }
 
   function disarm() {
     armedSession = null
+    clearStream()
     notify()
+  }
+
+  /** Mirror the process-local assistant stream for the armed session. */
+  function handleAssistantStream(sessionId, frame) {
+    if (armedSession === null || sessionId !== armedSession) return
+    const type = frame?.type
+    if (type === 'start') {
+      clearStream()
+      return
+    }
+    if (type !== 'chunk') return
+    const chunk = frame.chunk
+    if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+      streamText += chunk.text
+      scheduleStream()
+    }
   }
 
   /** Mirror the durable session feed; the caller filters by armed session. */
@@ -477,6 +557,7 @@ function createOverlayBridge(ctx) {
     if (session === undefined || session.id !== armedSession) return
     const type = event?.type
     if (type === 'assistant/message') {
+      clearStream()
       const text = messageText(event.data?.message)
       if (text !== '') show(text)
       return
@@ -490,21 +571,26 @@ function createOverlayBridge(ctx) {
     }
   }
 
+  function disposeChild() {
+    if (child === null) return
+    writeLine('quit')
+    const current = child
+    child = null
+    ready = false
+    visible = false
+    setTimeout(() => {
+      try {
+        current.kill()
+      } catch {}
+    }, 800)
+  }
+
   function dispose() {
-    if (child !== null) {
-      writeLine('quit')
-      const current = child
-      child = null
-      setTimeout(() => {
-        try {
-          current.kill()
-        } catch {}
-      }, 800)
-    }
+    disposeChild()
     notify()
   }
 
-  return { arm, disarm, show, hide, state, handleSessionEvent, dispose }
+  return { arm, disarm, show, stream, hide, configure, state, handleAssistantStream, handleSessionEvent, dispose }
 }
 
 function normalizeOverlayText(text) {
@@ -688,6 +774,18 @@ async function handle(req, res, ctx, hotkey, overlay) {
     return
   }
 
+  if (path === '/overlay/config' && req.method === 'POST') {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      send(res, error.code === 'tooLarge' ? 413 : 400, fail(error.code ?? 'badRequest', error.message))
+      return
+    }
+    send(res, 200, { ok: true, ...overlay.configure(body) })
+    return
+  }
+
   if (path === '/overlay/state' && req.method === 'GET') {
     send(res, 200, { ok: true, ...overlay.state() })
     return
@@ -718,18 +816,26 @@ export function apply(ctx) {
     }
   }, 'push-to-talk: loopback speech, hotkey and overlay bridge')
 
-  // Mirror one armed session's assistant replies onto the overlay. The durable
-  // feed is the authority: replies come from the session log, not the page.
+  // Mirror one armed session's assistant replies onto the overlay. Streaming
+  // deltas keep the panel live; the durable session feed holds the final text.
   ctx.effect(() => {
-    const off = ctx.on('session/event', (session, event) => {
+    const offStream = ctx.on('agent/assistant-stream', (payload) => {
+      try {
+        overlay.handleAssistantStream(payload?.agent?.id, payload?.frame)
+      } catch {}
+    })
+    const offSession = ctx.on('session/event', (session, event) => {
       try {
         overlay.handleSessionEvent(session, event)
       } catch {}
     })
     return () => {
       try {
-        if (typeof off === 'function') off()
+        if (typeof offStream === 'function') offStream()
+      } catch {}
+      try {
+        if (typeof offSession === 'function') offSession()
       } catch {}
     }
-  }, 'push-to-talk: reply overlay session feed')
+  }, 'push-to-talk: reply overlay feeds')
 }

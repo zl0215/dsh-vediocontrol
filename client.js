@@ -120,6 +120,46 @@ window.__ModuleLoader__.load({
         localStorage.setItem(OVERLAY_STORAGE, value === true ? '1' : '0')
       } catch {}
     }
+    const OVERLAY_OPACITY_STORAGE = 'dsh.push-to-talk.overlay-opacity'
+    const OVERLAY_FONT_STORAGE = 'dsh.push-to-talk.overlay-font'
+    const OVERLAY_FONT_SIZE_STORAGE = 'dsh.push-to-talk.overlay-font-size'
+    const OVERLAY_DEFAULT_OPACITY = 92
+    const OVERLAY_DEFAULT_FONT = 'Microsoft YaHei UI'
+    const OVERLAY_DEFAULT_FONT_SIZE = 20
+    const OVERLAY_FONT_OPTIONS = [
+      { value: 'Microsoft YaHei UI', zh: '微软雅黑', en: 'Microsoft YaHei' },
+      { value: 'SimSun', zh: '宋体', en: 'SimSun' },
+      { value: 'SimHei', zh: '黑体', en: 'SimHei' },
+      { value: 'Consolas', zh: 'Consolas', en: 'Consolas' },
+      { value: 'Segoe UI', zh: 'Segoe UI', en: 'Segoe UI' },
+    ]
+    const OVERLAY_FONT_SIZES = [14, 16, 18, 20, 22, 24, 28]
+    function loadOverlayNumber(key, fallback, min, max) {
+      try {
+        const raw = Number.parseInt(localStorage.getItem(key) ?? '', 10)
+        return Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : fallback
+      } catch {
+        return fallback
+      }
+    }
+    function storeOverlayNumber(key, value) {
+      try {
+        localStorage.setItem(key, String(value))
+      } catch {}
+    }
+    function loadOverlayFont() {
+      try {
+        const raw = localStorage.getItem(OVERLAY_FONT_STORAGE)
+        return OVERLAY_FONT_OPTIONS.some((option) => option.value === raw) ? raw : OVERLAY_DEFAULT_FONT
+      } catch {
+        return OVERLAY_DEFAULT_FONT
+      }
+    }
+    function storeOverlayFont(value) {
+      try {
+        localStorage.setItem(OVERLAY_FONT_STORAGE, value)
+      } catch {}
+    }
 
     //#region dictionaries
     const zh = {
@@ -190,6 +230,10 @@ window.__ModuleLoader__.load({
       overlayTitle: '回复浮窗（实验）',
       overlayDescOn: '已开启：回答会显示在屏幕上的小浮窗里（实验功能，可随时关闭）。',
       overlayDescOff: '实验功能，默认关闭：开启后用全局快捷键提问时，把回答显示在屏幕小浮窗里。',
+      overlayOpacity: '背景不透明度',
+      overlayPercent: '{percent}%',
+      overlayFont: '字体',
+      overlayFontSize: '字号',
       keyControlLeft: '左 Ctrl',
       keyControlRight: '右 Ctrl',
       keyAltLeft: '左 Alt',
@@ -267,6 +311,10 @@ window.__ModuleLoader__.load({
       overlayTitle: 'Reply overlay (experimental)',
       overlayDescOn: 'On: replies are shown in a small on-screen panel (experimental; can be turned off anytime).',
       overlayDescOff: 'Experimental and off by default. When on, a reply to a global-shortcut question appears in a small on-screen panel.',
+      overlayOpacity: 'Background opacity',
+      overlayPercent: '{percent}%',
+      overlayFont: 'Font',
+      overlayFontSize: 'Size',
       keyControlLeft: 'Left Ctrl',
       keyControlRight: 'Right Ctrl',
       keyAltLeft: 'Left Alt',
@@ -629,7 +677,8 @@ window.__ModuleLoader__.load({
         pendingText: '',
         keyCode: loadStoredKey(),
         capturingKey: false,
-        noticeTone: 'error',        inputMode: 'pointer',
+        noticeTone: 'error',
+        inputMode: 'pointer',
         permission: 'unknown',
         keepWarm: loadKeepWarm(),
         globalHotkey: loadGlobalHotkey(),
@@ -637,6 +686,9 @@ window.__ModuleLoader__.load({
         globalError: '',
         globalSeq: 0,
         overlayReplies: loadReplyOverlay(),
+        overlayOpacity: loadOverlayNumber(OVERLAY_OPACITY_STORAGE, OVERLAY_DEFAULT_OPACITY, 10, 100),
+        overlayFont: loadOverlayFont(),
+        overlayFontSize: loadOverlayNumber(OVERLAY_FONT_SIZE_STORAGE, OVERLAY_DEFAULT_FONT_SIZE, 10, 40),
       }
       applyKeepWarm(state.keepWarm)
       let recording = null
@@ -663,6 +715,7 @@ window.__ModuleLoader__.load({
       let globalPolling = false
       let globalPollController = null
       let lastBindAttempt = 0
+      let overlayConfigTimer = 0
 
       const subscribe = (listener) => {
         listeners.add(listener)
@@ -792,6 +845,54 @@ window.__ModuleLoader__.load({
         const next = value === true
         storeReplyOverlay(next)
         emit({ overlayReplies: next })
+        if (next) void syncOverlayConfig()
+      }
+
+      /** Push the current appearance to the Host (the helper restarts lazily). */
+      async function syncOverlayConfig() {
+        if (disposed) return
+        try {
+          await fetch(API + '/overlay/config', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              opacity: state.overlayOpacity,
+              fontFamily: state.overlayFont,
+              fontSize: state.overlayFontSize,
+            }),
+          })
+        } catch {}
+      }
+
+      function scheduleOverlayConfig() {
+        if (disposed) return
+        if (overlayConfigTimer !== 0) clearTimeout(overlayConfigTimer)
+        overlayConfigTimer = setTimeout(() => {
+          overlayConfigTimer = 0
+          void syncOverlayConfig()
+        }, 250)
+      }
+
+      function setOverlayOpacity(value) {
+        const next = Math.max(10, Math.min(100, Math.round(Number(value) || OVERLAY_DEFAULT_OPACITY)))
+        storeOverlayNumber(OVERLAY_OPACITY_STORAGE, next)
+        emit({ overlayOpacity: next })
+        scheduleOverlayConfig()
+      }
+
+      function setOverlayFont(value) {
+        if (!OVERLAY_FONT_OPTIONS.some((option) => option.value === value)) return
+        storeOverlayFont(value)
+        emit({ overlayFont: value })
+        scheduleOverlayConfig()
+      }
+
+      function setOverlayFontSize(value) {
+        const next = Math.max(10, Math.min(40, Math.round(Number(value) || OVERLAY_DEFAULT_FONT_SIZE)))
+        storeOverlayNumber(OVERLAY_FONT_SIZE_STORAGE, next)
+        emit({ overlayFontSize: next })
+        scheduleOverlayConfig()
       }
 
       /** Ask the Host to mirror this session's next reply on the OS overlay. */
@@ -1467,6 +1568,10 @@ window.__ModuleLoader__.load({
         setKeepWarm,
         setGlobalHotkey,
         setOverlayReplies,
+        setOverlayOpacity,
+        setOverlayFont,
+        setOverlayFontSize,
+        syncOverlayConfig,
         armOverlay,
         hideOverlay,
         syncGlobalBinding,
@@ -1543,6 +1648,11 @@ window.__ModuleLoader__.load({
 .dpt-setting-title{font-weight:500;font-size:13px}
 .dpt-setting-desc{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.45}
 .dpt-setting-warn{color:var(--dsw-alias-state-warn-primary);font-size:11px;line-height:1.4}
+.dpt-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:8px}
+.dpt-field{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dpt-range{width:110px;accent-color:var(--dsw-alias-brand-primary)}
+.dpt-select{font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dpt-value{min-width:34px;color:var(--dsw-alias-label-primary)}
 .dpt-setting-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .dpt-kbd{display:inline-flex;align-items:center;justify-content:center;min-width:36px;height:24px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
 `
@@ -1637,6 +1747,8 @@ window.__ModuleLoader__.load({
           void controller.syncGlobalBinding()
           controller.startGlobalPolling()
         }
+        // The Host keeps the overlay appearance in memory; push it on load.
+        void controller.syncOverlayConfig()
         const onFocus = () => {
           if (controller.getState().globalHotkey && !controller.getState().globalReady) void controller.syncGlobalBinding()
           // Back in DSH: the reply can be read here, so drop the on-screen copy.
@@ -2008,9 +2120,11 @@ window.__ModuleLoader__.load({
 
       /** Settings → General row: experimental on-screen reply panel. */
       function OverlayRow() {
-        useLocale()
+        const activeLocale = useLocale()
         const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
         const t = controller.t
+        const zhLocale = String(activeLocale).toLowerCase().startsWith('zh')
+        const fontLabel = (option) => (zhLocale ? option.zh : option.en)
         return h(
           'div',
           { className: 'dpt-setting' },
@@ -2024,6 +2138,60 @@ window.__ModuleLoader__.load({
               { className: 'dpt-setting-desc' },
               state.overlayReplies ? t('overlayDescOn') : t('overlayDescOff'),
             ),
+            state.overlayReplies
+              ? h(
+                  'div',
+                  { className: 'dpt-controls' },
+                  h(
+                    'label',
+                    { className: 'dpt-field' },
+                    h('span', null, t('overlayOpacity')),
+                    h('input', {
+                      type: 'range',
+                      className: 'dpt-range',
+                      min: 10,
+                      max: 100,
+                      step: 2,
+                      value: state.overlayOpacity,
+                      onInput: (event) => controller.setOverlayOpacity(Number(event.target.value)),
+                      onChange: (event) => controller.setOverlayOpacity(Number(event.target.value)),
+                    }),
+                    h('span', { className: 'dpt-value' }, t('overlayPercent', { percent: state.overlayOpacity })),
+                  ),
+                  h(
+                    'label',
+                    { className: 'dpt-field' },
+                    h('span', null, t('overlayFont')),
+                    h(
+                      'select',
+                      {
+                        className: 'dpt-select',
+                        value: state.overlayFont,
+                        onChange: (event) => controller.setOverlayFont(event.target.value),
+                      },
+                      OVERLAY_FONT_OPTIONS.map((option) =>
+                        h('option', { key: option.value, value: option.value }, fontLabel(option)),
+                      ),
+                    ),
+                  ),
+                  h(
+                    'label',
+                    { className: 'dpt-field' },
+                    h('span', null, t('overlayFontSize')),
+                    h(
+                      'select',
+                      {
+                        className: 'dpt-select',
+                        value: String(state.overlayFontSize),
+                        onChange: (event) => controller.setOverlayFontSize(Number(event.target.value)),
+                      },
+                      OVERLAY_FONT_SIZES.map((size) =>
+                        h('option', { key: size, value: String(size) }, String(size) + 'px'),
+                      ),
+                    ),
+                  ),
+                )
+              : null,
           ),
           h(
             'div',

@@ -118,9 +118,11 @@ dsh plugin --profile web add dsh-push-to-talk
 这是附带的实验性功能，不属于主要能力，**默认关闭**，只在 Windows 上可用。
 
 - **开关路径**：设置 → 通用 → 「回复浮窗（实验）」。
-- 开启后：用全局快捷键提问时，回答会显示在屏幕上的一个小浮窗里；可点右上角「×」关闭，约 10 秒后自动消失。
+- 开启后：用全局快捷键提问时，回答会**边生成边显示**（流式刷新）；可点右上角「×」关闭，回答结束后约 10 秒自动消失。
+- **外观设置**（同一设置行内）：背景不透明度（10%–100%）、字体、字号；修改后下一次显示生效。
+- 背景 100%（不透明）时面板可以被屏幕共享/录屏排除；低于 100% 时是半透明窗口，会看到后面的桌面。
 - 关闭后：不再启动浮窗辅助进程，插件只做语音输入，不显示任何浮窗。
-- 实现：可选的 `overlay.ps1` 辅助进程（本机 PowerShell/WPF，通过 stdin 接收要显示的文字）。
+- 实现：可选的 `overlay.ps1` 辅助进程（本机 PowerShell/WPF，通过 stdin 接收流式与最终文字）。
 
 ## 本机接口
 
@@ -133,7 +135,8 @@ POST /push-to-talk/api/prepare         准备模型（可选下载源）
 POST /push-to-talk/api/hotkey/bind     启动/停止全局按键辅助进程（{ enabled, code }）
 GET  /push-to-talk/api/hotkey/state    辅助进程状态
 GET  /push-to-talk/api/hotkey/poll     长轮询按键 down/up 事件（?since=N）
-POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听某会话这一次提问的回复
+POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听某会话这一次提问的回复（流式）
+POST /push-to-talk/api/overlay/config  回复浮窗（实验）：设置背景不透明度/字体/字号（{ opacity, fontFamily, fontSize }）
 POST /push-to-talk/api/overlay/show    回复浮窗（实验）：直接显示一段文字（调试用）
 POST /push-to-talk/api/overlay/hide    回复浮窗（实验）：收起浮窗
 GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
@@ -155,7 +158,7 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - `index.js` — Host 插件：注册回环 JSON 接口，桥接 `speechToText`；管理全局按键辅助进程，并（实验功能开启时）把回复送到浮窗。
 - `hotkey.ps1` — Windows 辅助进程：低级键盘钩子，把绑定的单个按键的按下/松开写到 stdout。
 - `client.js` — 浏览器插件：按住手势与单键按住、全局按键事件订阅、录音与 16 kHz 重采样、识别状态条、设置行、插入并发送。
-- `overlay.ps1` — 实验功能：Windows WPF 小浮窗（默认关闭，仅开启回复浮窗时启动）。
+- `overlay.ps1` — 实验功能：Windows WPF 流式浮窗（默认关闭；支持背景不透明度、字体、字号）。
 - `market/index.json` — 官方插件市场索引（格式 1，已通过官方校验器）。
 - `cordis.patch.yml` — 停用内置语音前端并插入本插件行。
 - `locale/*.json`、`icon.svg` — 插件管理器中的标题、描述与图标。
@@ -174,7 +177,9 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - Host 端到端：`/hotkey/bind` 启动辅助进程并很快 ready；注入一次 F2 后 `/hotkey/poll` 返回 down/up；重复 bind 复用进程。
 - `GET /push-to-talk/api/status` 返回真实识别服务快照（SenseVoiceSmall (INT8)，`phase: ready`，语言 `auto`）。
 - `POST /push-to-talk/api/transcribe` 用 1 秒 16 kHz WAV 端到端返回 `{"ok":true,"text":"","audioSeconds":1,...}`。
-- 回复浮窗（实验）探针测试通过：显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7 秒就绪）。
+- 回复浮窗（实验）探针测试通过：流式更新、最终显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7–0.9 秒就绪）；
+  不透明模式实测捕获排除 `affinity=0x11`，半透明模式（60%、宋体 22px）正常显示与更新。
+- `POST /overlay/config` 实测可切换不透明度/字体/字号并在下一次显示生效（辅助进程按新配置重启）。
 - 待用户实测：离开 DSH、在其它软件中按 F2 的完整链路（按键 → 识别 → 发送 → 助手执行）。
 
 ## 发布到插件市场
