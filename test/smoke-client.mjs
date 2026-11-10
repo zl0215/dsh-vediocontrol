@@ -145,8 +145,10 @@ const status = {
 const fetchCalls = []
 let hotkeyPollCount = 0
 const hotkeyEvents = [
-  { seq: 1, type: 'down' },
-  { seq: 2, type: 'up' },
+  { seq: 1, type: 'down', key: 'main' },
+  { seq: 2, type: 'up', key: 'main' },
+  { seq: 3, type: 'down', key: 'shot' },
+  { seq: 4, type: 'up', key: 'shot' },
 ]
 globalThis.fetch = async (url, options) => {
   const target = String(url)
@@ -158,12 +160,35 @@ globalThis.fetch = async (url, options) => {
       if (target.includes('/status')) return status
       if (target.includes('/hotkey/bind')) {
         const payload = options?.body ? JSON.parse(options.body) : {}
-        return { ok: true, enabled: payload.enabled === true, code: payload.code, ready: true, error: '' }
+        return {
+          ok: true,
+          enabled: payload.enabled === true,
+          code: payload.code,
+          shotCode: payload.shotCode ?? '',
+          ready: true,
+          error: '',
+        }
       }
       if (target.includes('/hotkey/poll')) {
         const events = hotkeyEvents.slice(hotkeyPollCount, hotkeyPollCount + 1)
         hotkeyPollCount += 1
-        return { ok: true, events, state: { enabled: true, code: 'F2', ready: true, error: '' }, seq: hotkeyPollCount }
+        return {
+          ok: true,
+          events,
+          state: { enabled: true, code: 'F2', shotCode: 'F3', ready: true, error: '' },
+          seq: hotkeyPollCount,
+        }
+      }
+      if (target.includes('/screenshot/capture')) {
+        // 1x1 transparent PNG.
+        return {
+          ok: true,
+          imageBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+          mediaType: 'image/png',
+          width: 1,
+          height: 1,
+          bytes: 70,
+        }
       }
       return { ok: true }
     },
@@ -207,8 +232,9 @@ const dock = byOwner.get('conversation.composer.dock')
 const shortcut = registrations.find((entry) => entry.options.id === 'push-to-talk-shortcut')
 const keepWarm = registrations.find((entry) => entry.options.id === 'push-to-talk-keep-warm')
 const globalRow = registrations.find((entry) => entry.options.id === 'push-to-talk-global')
+const screenshotRow = registrations.find((entry) => entry.options.id === 'push-to-talk-screenshot')
 const overlayRow = registrations.find((entry) => entry.options.id === 'push-to-talk-overlay')
-if (!shortcut || !keepWarm || !globalRow || !overlayRow) throw new Error('settings rows are not all registered')
+if (!shortcut || !keepWarm || !globalRow || !screenshotRow || !overlayRow) throw new Error('settings rows are not all registered')
 
 const micTree = mic.component(props)
 if (!micTree) throw new Error('microphone rendered nothing')
@@ -227,6 +253,8 @@ const keepWarmTree = keepWarm.component({})
 if (!keepWarmTree) throw new Error('keep-warm settings row rendered nothing')
 const globalTree = globalRow.component({})
 if (!globalTree) throw new Error('global shortcut settings row rendered nothing')
+const screenshotTree = screenshotRow.component({})
+if (!screenshotTree) throw new Error('screenshot settings row rendered nothing')
 const overlayTree = overlayRow.component({})
 if (!overlayTree) throw new Error('overlay settings row rendered nothing')
 
@@ -317,6 +345,33 @@ await new Promise((resolve) => setTimeout(resolve, 120))
 const onBind = fetchCalls.filter((call) => call.url.includes('/hotkey/bind')).pop()
 if (!onBind || JSON.parse(onBind.body).enabled !== true) throw new Error('re-enabling did not bind the helper')
 if (JSON.parse(onBind.body).code !== 'F4') throw new Error('bind used the wrong key: ' + JSON.parse(onBind.body).code)
+if (JSON.parse(onBind.body).shotCode !== 'F3') {
+  throw new Error('bind did not pass the screenshot key: ' + JSON.parse(onBind.body).shotCode)
+}
+
+// Screenshot row: F3 by default, enabled; clicking the key name rebinds it.
+if (!flatten(screenshotTree).includes('F3')) throw new Error('screenshot row does not show the default F3 key')
+const screenshotSwitch = findButtons(screenshotTree).find((button) => button.props?.['role'] === 'switch')
+if (!screenshotSwitch) throw new Error('screenshot row has no switch')
+if (screenshotSwitch.props['aria-checked'] !== 'true') throw new Error('screenshot row should default to enabled')
+const screenshotKeyButton = findButtons(screenshotTree).find((button) => button.props?.['role'] !== 'switch')
+if (!screenshotKeyButton) throw new Error('screenshot row has no key button')
+screenshotKeyButton.props.onClick()
+const shotCapturePress = press('F5', 'F5')
+if (!shotCapturePress.prevented || !shotCapturePress.stopped) throw new Error('screenshot key capture did not intercept F5')
+if (storage.get('dsh.push-to-talk.screenshot-key') !== 'F5') throw new Error('screenshot key was not persisted')
+const reboundScreenshotTree = screenshotRow.component({})
+if (!flatten(reboundScreenshotTree).includes('F5')) throw new Error('screenshot row did not show the new key')
+await new Promise((resolve) => setTimeout(resolve, 150))
+const shotBind = fetchCalls.filter((call) => call.url.includes('/hotkey/bind')).pop()
+if (!shotBind || JSON.parse(shotBind.body).shotCode !== 'F5') {
+  throw new Error('rebinding the screenshot key did not reach the helper')
+}
+// A Host-delivered screenshot press requests one capture through the loopback API.
+await new Promise((resolve) => setTimeout(resolve, 900))
+if (!fetchCalls.some((call) => call.url.includes('/screenshot/capture'))) {
+  throw new Error('the global screenshot press did not request a capture')
+}
 
 // Reply overlay switch: experimental and OFF by default; toggling persists both ways.
 if (!flatten(overlayTree).includes('已关闭')) throw new Error('overlay row does not show the default disabled state')

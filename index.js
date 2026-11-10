@@ -12,17 +12,21 @@
  *   POST /push-to-talk/api/hotkey/bind     → start/stop the global key helper
  *   GET  /push-to-talk/api/hotkey/state    → helper status
  *   GET  /push-to-talk/api/hotkey/poll     → long-poll for down/up events
+ *   POST /push-to-talk/api/screenshot/capture → { imageBase64, width, height, bytes }
  *
  * The global key helper is a small Windows PowerShell script (`hotkey.ps1`)
- * that installs a low-level keyboard hook, so holding the bound single key
- * works while another application has focus. The browser cannot see those
- * keys, so the Host forwards the down/up events to the page over the poll
- * route and the page records, transcribes and submits as usual.
+ * that installs a low-level keyboard hook for two keys: the push-to-talk key
+ * (hold to dictate) and the screenshot key (press to capture and send). The
+ * browser cannot see those keys, so the Host forwards the down/up events to the
+ * page over the poll route and the page records, transcribes and submits as
+ * usual. A second helper (`screenshot.ps1`) captures the virtual desktop on
+ * demand and hands the PNG back through the loopback route only.
  *
  * Audio stays transient: nothing here writes a Session event or attachment.
  */
 
 import { spawn } from 'node:child_process'
+import { readFile, unlink } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const ROUTE_PREFIX = '/push-to-talk/api'
@@ -34,9 +38,14 @@ const TRANSCRIBE_TIMEOUT_MS = 180_000
 
 const HOTKEY_SCRIPT = fileURLToPath(new URL('./hotkey.ps1', import.meta.url))
 const OVERLAY_SCRIPT = fileURLToPath(new URL('./overlay.ps1', import.meta.url))
+const SCREENSHOT_SCRIPT = fileURLToPath(new URL('./screenshot.ps1', import.meta.url))
 const HOTKEY_READY_TIMEOUT_MS = 10_000
 const HOTKEY_POLL_TIMEOUT_MS = 20_000
 const HOTKEY_EVENT_HISTORY = 32
+const SCREENSHOT_READY_TIMEOUT_MS = 20_000
+const SCREENSHOT_CAPTURE_TIMEOUT_MS = 20_000
+const SCREENSHOT_MAX_WIDTH = 1920
+const SCREENSHOT_MAX_BYTES = 32 * 1024 * 1024
 const OVERLAY_READY_TIMEOUT_MS = 20_000
 const OVERLAY_MAX_CHARS = 1200
 const OVERLAY_SECONDS = 10
@@ -125,19 +134,21 @@ function describe(snapshot) {
 
 /**
  * One spawned PowerShell helper, its event ring and the long-poll waiters.
- * Only the bound single key is reported; the hook never swallows the key.
+ * Reports the push-to-talk key and the screenshot key; the hook never swallows
+ * either key.
  */
 function createHotkeyBridge(ctx) {
   let child = null
   let enabled = false
   let code = ''
+  let shotCode = ''
   let ready = false
   let error = ''
   let seq = 0
   const history = []
   const waiters = new Set()
 
-  const state = () => ({ enabled, code, ready, error })
+  const state = () => ({ enabled, code, shotCode, ready, error })
 
   function notify() {
     for (const waiter of [...waiters]) {
@@ -147,9 +158,9 @@ function createHotkeyBridge(ctx) {
     }
   }
 
-  function push(type) {
+  function push(type, key) {
     seq += 1
-    history.push({ seq, type })
+    history.push({ seq, type, key })
     if (history.length > HOTKEY_EVENT_HISTORY) history.shift()
     notify()
   }
@@ -167,10 +178,11 @@ function createHotkeyBridge(ctx) {
     notify()
   }
 
-  function start(nextCode) {
+  function start(nextCode, nextShotCode) {
     stop()
     enabled = true
     code = nextCode
+    shotCode = nextShotCode
     ready = false
     error = ''
     if (process.platform !== 'win32') {
@@ -185,7 +197,11 @@ function createHotkeyBridge(ctx) {
         powershellPath(),
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', HOTKEY_SCRIPT],
         {
-          env: { ...process.env, DSH_PTT_KEY: nextCode },
+          env: {
+            ...process.env,
+            DSH_PTT_KEY: nextCode,
+            ...(nextShotCode === '' ? {} : { DSH_PTT_SHOT_KEY: nextShotCode }),
+          },
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
         },
@@ -220,9 +236,13 @@ function createHotkeyBridge(ctx) {
           error = ''
           notify()
         } else if (line === 'down') {
-          push('down')
+          push('down', 'main')
         } else if (line === 'up') {
-          push('up')
+          push('up', 'main')
+        } else if (line === 'down main' || line === 'down shot') {
+          push('down', line.slice(5).trim())
+        } else if (line === 'up main' || line === 'up shot') {
+          push('up', line.slice(3).trim())
         } else if (line.startsWith('error')) {
           error = line.slice(5).trim() || '全局快捷键助手出错'
           notify()
@@ -253,16 +273,21 @@ function createHotkeyBridge(ctx) {
     })
   }
 
-  function bind(nextEnabled, nextCode) {
+  function bind(nextEnabled, nextCode, nextShotCode) {
     const wanted = typeof nextCode === 'string' && HOTKEY_KEYS.has(nextCode) ? nextCode : code || 'F2'
+    const wantedShot =
+      typeof nextShotCode === 'string' && (nextShotCode === '' || HOTKEY_KEYS.has(nextShotCode))
+        ? nextShotCode
+        : shotCode
     if (nextEnabled === true) {
       // Reuse a live helper; a repeated bind from the page (for example on
       // window focus) must not restart it and reopen the compile/hook cost.
-      const reusable = enabled && child !== null && code === wanted
-      if (!reusable) start(wanted)
+      const reusable = enabled && child !== null && code === wanted && shotCode === wantedShot
+      if (!reusable) start(wanted, wantedShot)
     } else {
       stop()
       code = wanted
+      shotCode = wantedShot
       error = ''
     }
     return state()
@@ -300,6 +325,221 @@ function createHotkeyBridge(ctx) {
 }
 
 /**
+ * One spawned screenshot helper (`screenshot.ps1`). Captures are serialized:
+ * one `capture` command at a time, answered by one `ok <path> <w> <h> <bytes>`
+ * line. The helper keeps running between captures.
+ */
+function createScreenshotBridge(ctx) {
+  let child = null
+  let ready = false
+  let error = ''
+  let buffer = ''
+  let queue = Promise.resolve()
+  let pending = null
+  const waiters = new Set()
+
+  const state = () => ({ ready, error })
+
+  function notify() {
+    for (const waiter of [...waiters]) {
+      try {
+        waiter()
+      } catch {}
+    }
+  }
+
+  function finishCapture(method) {
+    const current = pending
+    pending = null
+    if (current !== null) {
+      try {
+        current[method]()
+      } catch {}
+    }
+  }
+
+  function handleLine(line) {
+    if (line === 'ready') {
+      ready = true
+      error = ''
+      notify()
+      return
+    }
+    if (line.startsWith('ok ')) {
+      const parts = line.split(' ')
+      // ok <path> <width> <height> <bytes>; a path may theoretically contain
+      // spaces, so parse from the right.
+      if (parts.length >= 5) {
+        const rest = parts.slice(1)
+        const bytes = Number(rest[rest.length - 1])
+        const height = Number(rest[rest.length - 2])
+        const width = Number(rest[rest.length - 3])
+        const path = rest.slice(0, rest.length - 3).join(' ')
+        if (pending !== null) {
+          const resolve = pending.resolve
+          pending = null
+          resolve({ path, width, height, bytes })
+        }
+        return
+      }
+      error = '截图助手返回了无效结果'
+      finishCapture('rejectWithError')
+      return
+    }
+    if (line.startsWith('error')) {
+      error = line.slice(5).trim() || '截图助手出错'
+      finishCapture('rejectWithError')
+    }
+  }
+
+  function spawnHelper() {
+    if (child !== null) return
+    if (process.platform !== 'win32') {
+      error = '截图目前仅支持 Windows'
+      notify()
+      return
+    }
+    let proc
+    try {
+      proc = spawn(
+        powershellPath(),
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCREENSHOT_SCRIPT],
+        {
+          env: { ...process.env, DSH_SCREENSHOT_MAX_WIDTH: String(SCREENSHOT_MAX_WIDTH) },
+          windowsHide: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      )
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure)
+      notify()
+      return
+    }
+    child = proc
+    ready = false
+    error = ''
+
+    let stderr = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk) => {
+      buffer += chunk
+      let newline = buffer.indexOf('\n')
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).trim()
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+        if (line !== '') handleLine(line)
+      }
+    })
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk).slice(-500)
+    })
+    proc.on('error', (failure) => {
+      error = failure instanceof Error ? failure.message : String(failure)
+      finishCapture('rejectWithError')
+      notify()
+    })
+    proc.on('exit', (exitCode) => {
+      if (child !== proc) return
+      child = null
+      ready = false
+      if (error === '') {
+        const detail = stderr.trim()
+        error = detail.length > 0 ? detail : `截图助手已退出（${exitCode ?? '?'}）`
+      }
+      notify()
+    })
+  }
+
+  function ensureStarted() {
+    if (ready && child !== null) return Promise.resolve(true)
+    spawnHelper()
+    if (child === null) return Promise.resolve(false)
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        waiters.delete(waiter)
+        resolve(value)
+      }
+      const waiter = () => {
+        if (ready) finish(true)
+        else if (child === null) finish(false)
+      }
+      const timer = setTimeout(() => finish(ready), SCREENSHOT_READY_TIMEOUT_MS)
+      waiters.add(waiter)
+    })
+  }
+
+  /** Capture one PNG; resolves { path, width, height, bytes }. */
+  function capture() {
+    const run = () =>
+      new Promise((resolve, reject) => {
+        spawnHelper()
+        if (child === null) {
+          reject(new Error(error || '截图助手不可用'))
+          return
+        }
+        ensureStarted().then((started) => {
+          if (!started) {
+            reject(new Error(error || '截图助手未就绪'))
+            return
+          }
+          const timer = setTimeout(() => {
+            if (pending !== null) {
+              pending = null
+              reject(new Error('截图超时'))
+            }
+          }, SCREENSHOT_CAPTURE_TIMEOUT_MS)
+          pending = {
+            resolve: (value) => {
+              clearTimeout(timer)
+              resolve(value)
+            },
+            rejectWithError: () => {
+              clearTimeout(timer)
+              reject(new Error(error || '截图失败'))
+            },
+          }
+          try {
+            child.stdin.write('capture\n')
+          } catch (failure) {
+            pending = null
+            clearTimeout(timer)
+            reject(failure instanceof Error ? failure : new Error(String(failure)))
+          }
+        })
+      })
+    const next = queue.then(run, run)
+    queue = next.catch(() => {})
+    return next
+  }
+
+  function dispose() {
+    const current = child
+    child = null
+    ready = false
+    finishCapture('rejectWithError')
+    if (current !== null) {
+      try {
+        current.stdin.write('quit\n')
+      } catch {}
+      setTimeout(() => {
+        try {
+          current.kill()
+        } catch {}
+      }, 800)
+    }
+    notify()
+  }
+
+  return { capture, state, dispose }
+}
+
+/**
  * The reply overlay: one spawned PowerShell/WPF process with a transparent,
  * topmost, click-through text window. The Host arms it after a dictation and
  * feeds the assistant's reply text from the durable session feed.
@@ -313,6 +553,15 @@ function createOverlayBridge(ctx) {
   let visible = false
   let streamText = ''
   let flushTimer = null
+  let seenSessionEvents = 0
+  let seenStreamFrames = 0
+  let lastSessionEventType = ''
+  let lastSessionArgType = ''
+  let lastSessionArgId = ''
+  let lastStreamAgentId = ''
+  let lastMessageSession = ''
+  let lastMessageChars = 0
+  let matchedStreamFrames = 0
   const config = {
     opacity: OVERLAY_DEFAULT_OPACITY,
     fontFamily: OVERLAY_DEFAULT_FONT,
@@ -326,6 +575,17 @@ function createOverlayBridge(ctx) {
     armed: armedSession !== null,
     visible,
     lastText: lastText.slice(0, 80),
+    debug: {
+      seenSessionEvents,
+      seenStreamFrames,
+      lastSessionEventType,
+      lastSessionArgType,
+      lastSessionArgId,
+      lastStreamAgentId,
+      lastMessageSession,
+      lastMessageChars,
+      matchedStreamFrames,
+    },
     config: { ...config },
   })
 
@@ -521,8 +781,9 @@ function createOverlayBridge(ctx) {
 
   /** Arm one session: its next assistant replies are mirrored on screen. */
   function arm(sessionId) {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) return false
-    armedSession = sessionId
+    const normalized = normalizeSessionId(sessionId)
+    if (normalized === '') return false
+    armedSession = normalized
     lastText = ''
     clearStream()
     show('正在处理你的请求…')
@@ -537,7 +798,10 @@ function createOverlayBridge(ctx) {
 
   /** Mirror the process-local assistant stream for the armed session. */
   function handleAssistantStream(sessionId, frame) {
-    if (armedSession === null || sessionId !== armedSession) return
+    seenStreamFrames += 1
+    lastStreamAgentId = typeof sessionId === 'string' ? sessionId : ''
+    if (armedSession === null || normalizeSessionId(sessionId) !== armedSession) return
+    matchedStreamFrames += 1
     const type = frame?.type
     if (type === 'start') {
       clearStream()
@@ -553,12 +817,27 @@ function createOverlayBridge(ctx) {
 
   /** Mirror the durable session feed; the caller filters by armed session. */
   function handleSessionEvent(session, event) {
-    if (armedSession === null) return
-    if (session === undefined || session.id !== armedSession) return
+    seenSessionEvents += 1
+    lastSessionEventType = typeof event?.type === 'string' ? event.type : ''
+    lastSessionArgType = typeof session
+    lastSessionArgId =
+      session === null || session === undefined
+        ? ''
+        : typeof session === 'string'
+          ? session
+          : typeof session.id === 'string'
+            ? session.id
+            : ''
     const type = event?.type
+    const text = type === 'assistant/message' ? messageText(event.data?.message) : ''
+    if (type === 'assistant/message') {
+      lastMessageSession = typeof session?.id === 'string' ? session.id : ''
+      lastMessageChars = text.length
+    }
+    if (armedSession === null) return
+    if (session === undefined || normalizeSessionId(session.id) !== armedSession) return
     if (type === 'assistant/message') {
       clearStream()
-      const text = messageText(event.data?.message)
       if (text !== '') show(text)
       return
     }
@@ -593,6 +872,11 @@ function createOverlayBridge(ctx) {
   return { arm, disarm, show, stream, hide, configure, state, handleAssistantStream, handleSessionEvent, dispose }
 }
 
+function normalizeSessionId(value) {
+  if (typeof value !== 'string') return ''
+  return value.startsWith('session-') ? value.slice('session-'.length) : value
+}
+
 function normalizeOverlayText(text) {
   let value = String(text ?? '').replace(/\r\n/g, '\n')
   if (value.trim() === '') return ''
@@ -611,7 +895,7 @@ function messageText(message) {
   return normalizeOverlayText(parts.join('\n'))
 }
 
-async function handle(req, res, ctx, hotkey, overlay) {
+async function handle(req, res, ctx, hotkey, overlay, screenshot) {
   if (!isLoopback(req)) {
     send(res, 403, fail('forbidden', '仅允许本机访问语音接口'))
     return
@@ -721,7 +1005,11 @@ async function handle(req, res, ctx, hotkey, overlay) {
       send(res, error.code === 'tooLarge' ? 413 : 400, fail(error.code ?? 'badRequest', error.message))
       return
     }
-    const next = hotkey.bind(body?.enabled === true, typeof body?.code === 'string' ? body.code : '')
+    const next = hotkey.bind(
+      body?.enabled === true,
+      typeof body?.code === 'string' ? body.code : '',
+      typeof body?.shotCode === 'string' ? body.shotCode : '',
+    )
     send(res, 200, { ok: true, ...next, seq: 0 })
     return
   }
@@ -736,6 +1024,44 @@ async function handle(req, res, ctx, hotkey, overlay) {
     const since = Number.isFinite(sinceRaw) && sinceRaw >= 0 ? sinceRaw : 0
     const result = await hotkey.poll(since, HOTKEY_POLL_TIMEOUT_MS)
     send(res, 200, { ok: true, events: result.events, state: result.state, seq: result.events.length > 0 ? result.events[result.events.length - 1].seq : since })
+    return
+  }
+
+  if (path === '/screenshot/capture' && req.method === 'POST') {
+    if (process.platform !== 'win32') {
+      send(res, 503, fail('unsupported', '截图目前仅支持 Windows'))
+      return
+    }
+    let shot
+    try {
+      shot = await screenshot.capture()
+    } catch (error) {
+      send(res, 500, fail('capture', error instanceof Error ? error.message : String(error)))
+      return
+    }
+    let data
+    try {
+      data = await readFile(shot.path)
+    } catch (error) {
+      send(res, 500, fail('read', error instanceof Error ? error.message : String(error)))
+      return
+    } finally {
+      try {
+        await unlink(shot.path)
+      } catch {}
+    }
+    if (data.length > SCREENSHOT_MAX_BYTES) {
+      send(res, 413, fail('tooLarge', '截图文件过大'))
+      return
+    }
+    send(res, 200, {
+      ok: true,
+      imageBase64: data.toString('base64'),
+      mediaType: 'image/png',
+      width: shot.width,
+      height: shot.height,
+      bytes: data.length,
+    })
     return
   }
 
@@ -797,8 +1123,9 @@ async function handle(req, res, ctx, hotkey, overlay) {
 export function apply(ctx) {
   const hotkey = createHotkeyBridge(ctx)
   const overlay = createOverlayBridge(ctx)
+  const screenshot = createScreenshotBridge(ctx)
   const handler = (req, res) => {
-    Promise.resolve(handle(req, res, ctx, hotkey, overlay)).catch((error) => {
+    Promise.resolve(handle(req, res, ctx, hotkey, overlay, screenshot)).catch((error) => {
       try {
         ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
       } catch {}
@@ -813,8 +1140,9 @@ export function apply(ctx) {
       } catch {}
       hotkey.dispose()
       overlay.dispose()
+      screenshot.dispose()
     }
-  }, 'push-to-talk: loopback speech, hotkey and overlay bridge')
+  }, 'push-to-talk: loopback speech, hotkey, screenshot and overlay bridges')
 
   // Mirror one armed session's assistant replies onto the overlay. Streaming
   // deltas keep the panel live; the durable session feed holds the final text.

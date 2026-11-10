@@ -160,6 +160,35 @@ window.__ModuleLoader__.load({
         localStorage.setItem(OVERLAY_FONT_STORAGE, value)
       } catch {}
     }
+    const SCREENSHOT_KEY_STORAGE = 'dsh.push-to-talk.screenshot-key'
+    const SCREENSHOT_ENABLED_STORAGE = 'dsh.push-to-talk.screenshot'
+    const DEFAULT_SCREENSHOT_KEY = 'F3'
+    function loadScreenshotKey() {
+      try {
+        const raw = localStorage.getItem(SCREENSHOT_KEY_STORAGE)
+        return isBindableKey(raw) ? raw : DEFAULT_SCREENSHOT_KEY
+      } catch {
+        return DEFAULT_SCREENSHOT_KEY
+      }
+    }
+    function storeScreenshotKey(value) {
+      try {
+        localStorage.setItem(SCREENSHOT_KEY_STORAGE, value)
+      } catch {}
+    }
+    function loadScreenshotEnabled() {
+      try {
+        // On by default; an explicit '0' from the settings switch keeps it off.
+        return localStorage.getItem(SCREENSHOT_ENABLED_STORAGE) !== '0'
+      } catch {
+        return true
+      }
+    }
+    function storeScreenshotEnabled(value) {
+      try {
+        localStorage.setItem(SCREENSHOT_ENABLED_STORAGE, value === true ? '1' : '0')
+      } catch {}
+    }
 
     //#region dictionaries
     const zh = {
@@ -234,6 +263,15 @@ window.__ModuleLoader__.load({
       overlayPercent: '{percent}%',
       overlayFont: '字体',
       overlayFontSize: '字号',
+      screenshotTitle: '截图并发送',
+      screenshotDescOn: '按 {key} 截取整个屏幕并直接发送到当前会话；在其它软件中也能用（需要全局快捷键已启用）。',
+      screenshotDescOff: '已关闭：按 {key} 不再截图发送。',
+      screenshotKeyLabel: '截图快捷键',
+      screenshotCapturing: '请按下新的按键…',
+      screenshotSending: '正在截屏…',
+      screenshotSent: '截图已发送',
+      screenshotFailed: '截图失败：{message}',
+      screenshotNoSession: '没有打开的会话，无法发送截图',
       keyControlLeft: '左 Ctrl',
       keyControlRight: '右 Ctrl',
       keyAltLeft: '左 Alt',
@@ -315,6 +353,15 @@ window.__ModuleLoader__.load({
       overlayPercent: '{percent}%',
       overlayFont: 'Font',
       overlayFontSize: 'Size',
+      screenshotTitle: 'Screenshot and send',
+      screenshotDescOn: 'Press {key} to capture the whole screen and send it to the current session; works while another application is focused (global shortcut on).',
+      screenshotDescOff: 'Off: {key} no longer captures a screenshot.',
+      screenshotKeyLabel: 'Screenshot key',
+      screenshotCapturing: 'Press a new key…',
+      screenshotSending: 'Capturing the screen…',
+      screenshotSent: 'Screenshot sent',
+      screenshotFailed: 'Screenshot failed: {message}',
+      screenshotNoSession: 'No open session to send the screenshot to',
       keyControlLeft: 'Left Ctrl',
       keyControlRight: 'Right Ctrl',
       keyAltLeft: 'Left Alt',
@@ -689,6 +736,9 @@ window.__ModuleLoader__.load({
         overlayOpacity: loadOverlayNumber(OVERLAY_OPACITY_STORAGE, OVERLAY_DEFAULT_OPACITY, 10, 100),
         overlayFont: loadOverlayFont(),
         overlayFontSize: loadOverlayNumber(OVERLAY_FONT_SIZE_STORAGE, OVERLAY_DEFAULT_FONT_SIZE, 10, 40),
+        screenshotKey: loadScreenshotKey(),
+        screenshotEnabled: loadScreenshotEnabled(),
+        capturingTarget: '',
       }
       applyKeepWarm(state.keepWarm)
       let recording = null
@@ -716,6 +766,7 @@ window.__ModuleLoader__.load({
       let globalPollController = null
       let lastBindAttempt = 0
       let overlayConfigTimer = 0
+      let screenshotInFlight = false
 
       const subscribe = (listener) => {
         listeners.add(listener)
@@ -798,10 +849,27 @@ window.__ModuleLoader__.load({
 
       function setKeyBinding(code) {
         if (!isBindableKey(code)) return false
+        if (state.screenshotEnabled && code === state.screenshotKey) return false
         storeKey(code)
         emit({ keyCode: code })
         if (state.globalHotkey) void syncGlobalBinding()
         return true
+      }
+
+      function setScreenshotKey(code) {
+        if (!isBindableKey(code)) return false
+        if (code === state.keyCode) return false
+        storeScreenshotKey(code)
+        emit({ screenshotKey: code })
+        if (state.globalHotkey) void syncGlobalBinding()
+        return true
+      }
+
+      function setScreenshotEnabled(value) {
+        const next = value === true
+        storeScreenshotEnabled(next)
+        emit({ screenshotEnabled: next })
+        if (state.globalHotkey) void syncGlobalBinding()
       }
 
       /** Tell the Host which single key the global helper should listen for. */
@@ -813,7 +881,11 @@ window.__ModuleLoader__.load({
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ enabled: state.globalHotkey === true, code: state.keyCode }),
+            body: JSON.stringify({
+              enabled: state.globalHotkey === true,
+              code: state.keyCode,
+              shotCode: state.screenshotEnabled ? state.screenshotKey : '',
+            }),
           })
           let data = null
           try {
@@ -921,6 +993,100 @@ window.__ModuleLoader__.load({
         } catch {}
       }
 
+      /** Convert a base64 payload into bytes without a data: URL round trip. */
+      function decodeBase64(value) {
+        const binary = atob(String(value))
+        const bytes = new Uint8Array(binary.length)
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+        return bytes
+      }
+
+      /** The visible Lexical/composer editable element of the current session. */
+      function findComposerEditor() {
+        const editors = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(
+          (element) =>
+            element instanceof HTMLElement &&
+            element.getClientRects().length > 0 &&
+            element.closest('[aria-hidden="true"]') === null,
+        )
+        if (editors.length === 0) return null
+        // The conversation composer is the last visible editable on the page.
+        return editors[editors.length - 1]
+      }
+
+      /** Dispatch a synthetic paste carrying one image File at the editor. */
+      function pasteImageIntoEditor(editor, file) {
+        const transfer = new DataTransfer()
+        transfer.items.add(file)
+        try {
+          const event = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: transfer,
+          })
+          editor.dispatchEvent(event)
+          return true
+        } catch {}
+        try {
+          const event = new Event('paste', { bubbles: true, cancelable: true })
+          Object.defineProperty(event, 'clipboardData', { value: transfer })
+          editor.dispatchEvent(event)
+          return true
+        } catch {}
+        return false
+      }
+
+      /** Take a screenshot and send it to the current session as an image message. */
+      async function captureAndSendScreenshot() {
+        if (disposed || screenshotInFlight) return
+        if (slotContext === null) {
+          notice(t('screenshotNoSession'))
+          return
+        }
+        screenshotInFlight = true
+        notice(t('screenshotSending'), 'success')
+        try {
+          const response = await fetch(API + '/screenshot/capture', {
+            method: 'POST',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+            signal: AbortSignal.timeout(30_000),
+          })
+          let data = null
+          try {
+            data = await response.json()
+          } catch {}
+          if (!response.ok || data === null || data.ok !== true) {
+            throw new Error(data?.error?.message ?? 'HTTP ' + response.status)
+          }
+          const bytes = decodeBase64(data.imageBase64)
+          if (bytes.length === 0) throw new Error('截图内容为空')
+          const stamp = new Date()
+            .toISOString()
+            .replace(/[:.]/g, '-')
+            .replace('T', '-')
+            .slice(0, 19)
+          const file = new File([bytes], 'screenshot-' + stamp + '.png', { type: 'image/png' })
+          const editor = findComposerEditor()
+          if (editor === null) throw new Error('没有找到输入框')
+          if (!pasteImageIntoEditor(editor, file)) throw new Error('无法把截图插入输入框')
+          // Give the composer one tick to register the pasted image before sending.
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          if (disposed) return
+          const actions = slotContext.inputActions
+          if (!actions || typeof actions.submit !== 'function') throw new Error('输入框不可用')
+          actions.submit()
+          if (state.overlayReplies) void armOverlay(slotContext.sessionId)
+          notice(t('screenshotSent'), 'success')
+        } catch (error) {
+          notice(t('screenshotFailed', { message: error instanceof Error ? error.message : String(error) }))
+        } finally {
+          screenshotInFlight = false
+        }
+      }
+
       function onGlobalDown() {
         if (disposed || BUSY.has(state.phase)) return
         if (slotContext === null) return
@@ -935,6 +1101,11 @@ window.__ModuleLoader__.load({
 
       function onGlobalUp() {
         end()
+      }
+
+      function onGlobalShot() {
+        if (disposed || !state.screenshotEnabled) return
+        void captureAndSendScreenshot()
       }
 
       async function pollGlobalLoop() {
@@ -961,6 +1132,10 @@ window.__ModuleLoader__.load({
                 globalSeq: seq,
               })
               for (const event of events) {
+                if (event.key === 'shot') {
+                  if (event.type === 'down') onGlobalShot()
+                  continue
+                }
                 if (event.type === 'down') onGlobalDown()
                 else if (event.type === 'up') onGlobalUp()
               }
@@ -1023,22 +1198,23 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function startKeyCapture() {
+      function startKeyCapture(target) {
         if (disposed) return
-        emit({ capturingKey: true })
+        emit({ capturingKey: true, capturingTarget: target === 'screenshot' ? 'screenshot' : 'main' })
       }
 
       function cancelKeyCapture() {
         if (!state.capturingKey) return
-        emit({ capturingKey: false })
+        emit({ capturingKey: false, capturingTarget: '' })
       }
 
       function handleKeyDown(event) {
         if (disposed) return
         if (state.capturingKey) {
+          const target = state.capturingTarget || 'main'
           if (event.key === 'Escape') {
             event.preventDefault()
-            emit({ capturingKey: false })
+            emit({ capturingKey: false, capturingTarget: '' })
             return
           }
           if (event.isComposing || event.repeat) return
@@ -1051,9 +1227,29 @@ window.__ModuleLoader__.load({
           }
           event.preventDefault()
           event.stopPropagation()
-          setKeyBinding(event.code)
-          emit({ capturingKey: false })
-          notice(t('shortcutSaved', { key: keyLabel(event.code) }), 'success')
+          if (target === 'screenshot') {
+            if (setScreenshotKey(event.code)) {
+              notice(t('shortcutSaved', { key: keyLabel(event.code) }), 'success')
+            } else {
+              notice(t('shortcutInvalid'))
+            }
+          } else {
+            setKeyBinding(event.code)
+            notice(t('shortcutSaved', { key: keyLabel(event.code) }), 'success')
+          }
+          emit({ capturingKey: false, capturingTarget: '' })
+          return
+        }
+        if (state.screenshotEnabled && event.code === state.screenshotKey) {
+          if (event.repeat || event.isComposing) return
+          // With a running global helper the Host delivers this press too.
+          if (state.globalHotkey && state.globalReady) {
+            event.preventDefault()
+            return
+          }
+          event.preventDefault()
+          event.stopPropagation()
+          void captureAndSendScreenshot()
           return
         }
         if (event.code !== state.keyCode) return
@@ -1564,6 +1760,9 @@ window.__ModuleLoader__.load({
         setActiveSession,
         setSlotContext,
         setKeyBinding,
+        setScreenshotKey,
+        setScreenshotEnabled,
+        captureAndSendScreenshot,
         setPermission,
         setKeepWarm,
         setGlobalHotkey,
@@ -2118,6 +2317,60 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /** Settings → General row: screenshot capture and background send. */
+      function ScreenshotRow() {
+        useLocale()
+        const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
+        const t = controller.t
+        const key = controller.keyLabel(state.screenshotKey)
+        const capturing = state.capturingKey && state.capturingTarget === 'screenshot'
+        let description
+        if (capturing) description = t('screenshotCapturing')
+        else if (state.screenshotEnabled) description = t('screenshotDescOn', { key })
+        else description = t('screenshotDescOff', { key })
+        return h(
+          'div',
+          { className: 'dpt-setting' },
+          h('style', null, STYLES),
+          h(
+            'div',
+            { className: 'dpt-setting-text' },
+            h('strong', { className: 'dpt-setting-title' }, t('screenshotTitle')),
+            h('span', { className: 'dpt-setting-desc' }, description),
+          ),
+          h(
+            'div',
+            { className: 'dpt-setting-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dpt-button',
+                'data-primary': capturing ? 'true' : 'false',
+                onClick: () => {
+                  if (capturing) controller.cancelKeyCapture()
+                  else controller.startKeyCapture('screenshot')
+                },
+                title: t('screenshotKeyLabel'),
+              },
+              capturing ? t('screenshotCapturing') : key,
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'switch',
+                'aria-checked': state.screenshotEnabled ? 'true' : 'false',
+                className: 'dpt-button',
+                'data-primary': state.screenshotEnabled ? 'true' : 'false',
+                onClick: () => controller.setScreenshotEnabled(!state.screenshotEnabled),
+              },
+              state.screenshotEnabled ? t('on') : t('off'),
+            ),
+          ),
+        )
+      }
+
       /** Settings → General row: experimental on-screen reply panel. */
       function OverlayRow() {
         const activeLocale = useLocale()
@@ -2292,8 +2545,18 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           {
             name: 'settings.general.item',
+            id: 'push-to-talk-screenshot',
+            order: 25,
+          },
+          ScreenshotRow,
+        ),
+      )
+      ctx.slots.inject('settings.general.item', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.general.item',
             id: 'push-to-talk-overlay',
-            order: 24,
+            order: 26,
           },
           OverlayRow,
         ),

@@ -2,8 +2,8 @@
 #
 # Verifies, against a real hidden powershell.exe child and real global input:
 #   * invalid / missing DSH_PTT_KEY -> "error invalid-key" on stdout, exit 1
-#   * F2: "ready" line, then "down"/"up" for injected input, install-to-ready time
-#   * auto-repeat guard: several injected key-downs -> exactly one "down"
+#   * F2: "ready" line, then "down main"/"up main" for injected input, install-to-ready time
+#   * auto-repeat guard: several injected key-downs -> exactly one "down main"
 #   * negative matching: another key does not trigger the listener
 #   * ControlRight / ShiftRight etc. (extended-key + scan-code side detection)
 #   * liveness: the process is still pumping and responsive after ~20 s
@@ -88,6 +88,7 @@ function Wait-ForLineCount {
 
 function Set-HookEnv {
     param([string]$Key)
+    Remove-Item Env:DSH_PTT_SHOT_KEY -ErrorAction SilentlyContinue
     if ([string]::IsNullOrEmpty($Key)) {
         Remove-Item Env:DSH_PTT_KEY -ErrorAction SilentlyContinue
     }
@@ -208,7 +209,7 @@ foreach ($case in $invalidCases) {
 Write-Output ''
 
 # ---------------------------------------------------------------------------
-# 2. F2 lifecycle: ready, injected down/up, repeat guard, negative match,
+# 2. F2 lifecycle: ready, injected down main/up main, repeat guard, negative match,
 #    liveness after N seconds, clean kill.
 # ---------------------------------------------------------------------------
 Write-Output '[F2 lifecycle]'
@@ -219,11 +220,11 @@ try {
 
     $inject = Invoke-Injector -Key 'F2' -Mode 'tap' -HoldMilliseconds 200
     Assert-That -Name 'F2: injector SendInput succeeded' -Condition ($inject.ExitCode -eq 0) -Detail ('injector exit=' + $inject.ExitCode)
-    $downMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'down' -Count 1 -TimeoutMilliseconds 5000
-    $upMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'up' -Count 1 -TimeoutMilliseconds 5000
-    Assert-That -Name 'F2: injected tap produced "down"' -Condition ($downMs -ge 0) -Detail ('after ' + $downMs + ' ms')
-    Assert-That -Name 'F2: injected tap produced "up"' -Condition ($upMs -ge 0) -Detail ('after ' + $upMs + ' ms')
-    Assert-That -Name 'F2: transcript is exactly ready/down/up' -Condition ((Format-Transcript $f2.OutPath) -eq 'ready / down / up') -Detail ('transcript: ' + (Format-Transcript $f2.OutPath))
+    $downMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'down main' -Count 1 -TimeoutMilliseconds 5000
+    $upMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'up main' -Count 1 -TimeoutMilliseconds 5000
+    Assert-That -Name 'F2: injected tap produced "down main"' -Condition ($downMs -ge 0) -Detail ('after ' + $downMs + ' ms')
+    Assert-That -Name 'F2: injected tap produced "up main"' -Condition ($upMs -ge 0) -Detail ('after ' + $upMs + ' ms')
+    Assert-That -Name 'F2: transcript is exactly ready/down/up' -Condition ((Format-Transcript $f2.OutPath) -eq 'ready / down main / up main') -Detail ('transcript: ' + (Format-Transcript $f2.OutPath))
 
     $injectOther = Invoke-Injector -Key 'F1' -Mode 'tap' -HoldMilliseconds 100
     Start-Sleep -Milliseconds 400
@@ -232,8 +233,8 @@ try {
 
     $injectRepeat = Invoke-Injector -Key 'F2' -Mode 'repeat' -HoldMilliseconds 300 -Repeats 5
     Start-Sleep -Milliseconds 600
-    $downCount = Get-LineCount -Path $f2.OutPath -Literal 'down'
-    $upCount = Get-LineCount -Path $f2.OutPath -Literal 'up'
+    $downCount = Get-LineCount -Path $f2.OutPath -Literal 'down main'
+    $upCount = Get-LineCount -Path $f2.OutPath -Literal 'up main'
     Assert-That -Name 'F2: auto-repeat guard (5 injected downs -> 1 extra down)' -Condition ($downCount -eq 2 -and $upCount -eq 2) -Detail ('down=' + $downCount + ', up=' + $upCount + ', injector exit=' + $injectRepeat.ExitCode)
 
     if (-not $SkipLiveness) {
@@ -243,9 +244,9 @@ try {
         Assert-That -Name ('F2: alive after ' + $seconds + ' s') -Condition (-not $f2.Process.HasExited) -Detail ('pid=' + $f2.Process.Id)
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $injectLate = Invoke-Injector -Key 'F2' -Mode 'tap' -HoldMilliseconds 120
-        $lateUpMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'up' -Count 3 -TimeoutMilliseconds 5000
+        $lateUpMs = Wait-ForLineCount -Path $f2.OutPath -Literal 'up main' -Count 3 -TimeoutMilliseconds 5000
         $roundTrip = $sw.ElapsedMilliseconds
-        Assert-That -Name ('F2: still pumping after ' + $seconds + ' s (new down/up pair)') -Condition ($lateUpMs -ge 0 -and (Get-LineCount -Path $f2.OutPath -Literal 'down') -eq 3) -Detail ('round-trip incl. injector start ' + $roundTrip + ' ms, injector exit=' + $injectLate.ExitCode)
+        Assert-That -Name ('F2: still pumping after ' + $seconds + ' s (new down/up pair)') -Condition ($lateUpMs -ge 0 -and (Get-LineCount -Path $f2.OutPath -Literal 'down main') -eq 3) -Detail ('round-trip incl. injector start ' + $roundTrip + ' ms, injector exit=' + $injectLate.ExitCode)
     }
 
     $stderr = @(Get-Lines $f2.ErrPath)
@@ -277,8 +278,8 @@ foreach ($key in $modifierKeys) {
     try {
         Assert-That -Name ($key + ': "ready" received') -Condition ($listener.ReadyMs -ge 0) -Detail ('spawn-to-ready ' + $listener.SpawnToReadyMs + ' ms')
         $inject = Invoke-Injector -Key $key -Mode 'tap' -HoldMilliseconds 150
-        $null = Wait-ForLineCount -Path $listener.OutPath -Literal 'up' -Count 1 -TimeoutMilliseconds 5000
-        Assert-That -Name ($key + ': injected tap produced down/up') -Condition ((Format-Transcript $listener.OutPath) -eq 'ready / down / up') -Detail ('transcript: ' + (Format-Transcript $listener.OutPath) + ', injector exit=' + $inject.ExitCode)
+        $null = Wait-ForLineCount -Path $listener.OutPath -Literal 'up main' -Count 1 -TimeoutMilliseconds 5000
+        Assert-That -Name ($key + ': injected tap produced down/up') -Condition ((Format-Transcript $listener.OutPath) -eq 'ready / down main / up main') -Detail ('transcript: ' + (Format-Transcript $listener.OutPath) + ', injector exit=' + $inject.ExitCode)
 
         $other = $negativeMap[$key]
         $null = Invoke-Injector -Key $other -Mode 'tap' -HoldMilliseconds 100
@@ -309,9 +310,9 @@ if ($AllKeys) {
         $listener = Start-Listener -Key $key
         try {
             $inject = Invoke-Injector -Key $key -Mode 'tap' -HoldMilliseconds 100
-            $null = Wait-ForLineCount -Path $listener.OutPath -Literal 'up' -Count 1 -TimeoutMilliseconds 5000
+            $null = Wait-ForLineCount -Path $listener.OutPath -Literal 'up main' -Count 1 -TimeoutMilliseconds 5000
             $transcript = Format-Transcript $listener.OutPath
-            Assert-That -Name ($key + ': ready/down/up') -Condition ($transcript -eq 'ready / down / up') -Detail ('ready=' + $listener.ReadyMs + ' ms, transcript: ' + $transcript)
+            Assert-That -Name ($key + ': ready/down/up') -Condition ($transcript -eq 'ready / down main / up main') -Detail ('ready=' + $listener.ReadyMs + ' ms, transcript: ' + $transcript)
         }
         finally {
             Stop-Listener $listener | Out-Null

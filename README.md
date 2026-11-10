@@ -4,6 +4,8 @@
 
 它复用本机已有的语音识别后端（语音输入插件包里的 `speechToText` 服务：SenseVoice 本地模型或云端服务），不重新下载模型，也不新增识别通道。
 
+另外提供一个**截图并发送**快捷键（默认 **F3**）：按一下截取整个屏幕，直接作为图片消息发送到当前会话，不会把 DSH 切到前台。
+
 ## 安装
 
 从 GitHub 源码安装（当前可用）：
@@ -38,6 +40,7 @@ dsh plugin --profile web add dsh-push-to-talk
 - **取消**：上滑后松开、按 **Esc**，或按住快捷键时再按其它字符键，都会取消本次录音。
 - 按下不足 350ms 视为误触，不会识别；没识别到语音也不会发送。
 - 最长单次录音 120 秒（与语音服务默认上限一致）。
+- **截图（F3）**：按一下截取整个屏幕并直接发送到当前会话；在其它软件里也能用（需要全局快捷键已启用）。
 
 ## 修改快捷键
 
@@ -48,6 +51,8 @@ dsh plugin --profile web add dsh-push-to-talk
 - 「恢复默认」回到 `F2`。
 - 绑定保存在浏览器本地（`localStorage`），换页面/重启后仍生效。
 
+**设置 → 通用 → 「截图并发送」**：点键名可以改截图快捷键（默认 `F3`，同样只接受功能键/修饰键）；旁边的开关可以整机关闭这个功能。截图键不能和按住说话键相同。
+
 同一页面还有 **「麦克风常驻」** 开关：打开后麦克风保持待命，按下零等待（系统麦克风指示会一直亮着）；关闭时只在每次识别后热连接 2 分钟。第一次识别成功后会弹一次「开启零等待」的提示条，点一下即可打开。
 
 > 之所以限制为功能键/修饰键：单个字符键（如 V）一旦绑定，就必须在每次输入该字符时让路，会破坏正常打字。
@@ -56,7 +61,7 @@ dsh plugin --profile web add dsh-push-to-talk
 
 打开 **设置 → 通用 → 「全局快捷键（其它软件中也能用）」**（默认开启）后：
 
-- 本插件会启动一个本机 PowerShell 辅助进程（`hotkey.ps1`），安装 Windows 低级键盘钩子，**只监听你绑定的那一个键**，不联网、不记录输入，也不拦截按键（其它软件照常收到这个键）。
+- 本插件会启动一个本机 PowerShell 辅助进程（`hotkey.ps1`），安装 Windows 低级键盘钩子，**只监听你绑定的按住说话键和截图键**，不联网、不记录输入，也不拦截按键（其它软件照常收到这些键）。
 - 之后即使你正在用别的软件、DSH 窗口在后台，**按住 F2 说话 → 松开**，识别结果会自动发送到 DSH 当前会话，由助手继续处理。
 - 更换快捷键后会自动重启辅助进程、改为监听新键；关闭开关即停止辅助进程。
 - 「麦克风常驻」建议同时打开：这样在其它软件里按下按键也是零等待；否则每次冷按仍会等设备打开。
@@ -70,11 +75,26 @@ dsh plugin --profile web add dsh-push-to-talk
 
 辅助进程的约定（`hotkey.ps1`）：
 
-- 由 Host 以 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File hotkey.ps1` 启动，只设置环境变量 `DSH_PTT_KEY`。
-- stdout 每行一个事件、立即刷新：`ready`（钩子装好）、`down`、`up`、`error <原因>`；自动重复不会重复上报 `down`。
+- 由 Host 以 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File hotkey.ps1` 启动，只设置环境变量 `DSH_PTT_KEY`（按住说话键）与 `DSH_PTT_SHOT_KEY`（截图键，未开启时为空）。
+- stdout 每行一个事件、立即刷新：`ready`（钩子装好）、`down main` / `up main`（按住说话键）、`down shot` / `up shot`（截图键）、`error <原因>`；自动重复不会重复上报 `down`。
 - 安装低级键盘钩子（`SetWindowsHookEx(WH_KEYBOARD_LL)`）后始终把按键转发给系统，**不吞键**。
 - 不需要管理员权限、不联网、不写磁盘；准备就绪约 0.7 秒（运行时编译内嵌 C#）。
 - 已知边界：收不到发往“以管理员运行”窗口的按键；UAC 提示/锁屏期间不产生事件；注入的按键也会被识别（便于自动化测试）。
+
+## 截图并发送（F3）
+
+按一下截图键（默认 **F3**）即可：
+
+- 由 Host 侧的本机辅助进程（`screenshot.ps1`）截取**整个虚拟桌面**（所有显示器，超宽时缩放到不超过 1920px 宽），生成一张临时 PNG；
+- 图片通过回环接口交回页面，页面把它作为图片附件插入当前会话的输入框并**立即发送**，不需要 DSH 在前台，也不会切换窗口；
+- 截图文件读取后立即删除，不在磁盘留存。
+
+说明：
+
+- 需要当前有一个打开的会话（有输入框）；没有会话时会提示，不会发送。
+- 在其它软件中按 F3 依赖「全局快捷键」已启用；在 DSH 页面内按 F3 也可以（会阻止浏览器默认的“查找下一个”）。
+- 截图会作为普通图片消息进入当前会话，并和普通附件一样被模型看到；涉及敏感画面时请先关闭此功能（设置里的开关）或按 Esc 前不要按 F3。
+- 目前只支持整屏截图，没有区域框选/单窗口截图。
 
 ## 麦克风权限与延迟
 
@@ -132,7 +152,8 @@ Host 侧只注册一个仅回环可访问的 JSON 接口（`127.0.0.1` / `::1`�
 GET  /push-to-talk/api/status          识别服务、选中服务商、准备进度、录音上限
 POST /push-to-talk/api/transcribe      { audioBase64 } → { text }（16 kHz 单声道 PCM16 WAV）
 POST /push-to-talk/api/prepare         准备模型（可选下载源）
-POST /push-to-talk/api/hotkey/bind     启动/停止全局按键辅助进程（{ enabled, code }）
+POST /push-to-talk/api/hotkey/bind     启动/停止全局按键辅助进程（{ enabled, code, shotCode }）
+POST /push-to-talk/api/screenshot/capture 截取整个屏幕 → { imageBase64, mediaType, width, height, bytes }（仅 Windows）
 GET  /push-to-talk/api/hotkey/state    辅助进程状态
 GET  /push-to-talk/api/hotkey/poll     长轮询按键 down/up 事件（?since=N）
 POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听某会话这一次提问的回复（流式）
@@ -151,13 +172,15 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - 全局快捷键仅支持 Windows，且会额外运行一个本机 PowerShell 辅助进程；DSH 窗口最小化时页面会被节流，建议保持窗口可见（可在其它窗口后面）。
 - 页面内按住期间切换会话、页面隐藏或浏览器失焦会结束/取消本次录音；全局录音不受窗口失焦影响。
 - 回复浮窗为实验功能，默认关闭，仅 Windows 可用。
+- 截图功能仅 Windows 可用，且只有整屏截图；截图会作为图片消息进入会话，敏感画面请先关闭该功能。
 - 若语音识别服务不可用（语音输入插件包被停用），按钮会以半透明提示，输入框下方给出说明。
 
 ## 文件
 
 - `index.js` — Host 插件：注册回环 JSON 接口，桥接 `speechToText`；管理全局按键辅助进程，并（实验功能开启时）把回复送到浮窗。
-- `hotkey.ps1` — Windows 辅助进程：低级键盘钩子，把绑定的单个按键的按下/松开写到 stdout。
+- `hotkey.ps1` — Windows 辅助进程：低级键盘钩子，把按住说话键与截图键的按下/松开写到 stdout。
 - `client.js` — 浏览器插件：按住手势与单键按住、全局按键事件订阅、录音与 16 kHz 重采样、识别状态条、设置行、插入并发送。
+- `screenshot.ps1` — Windows 辅助进程：按需截取整个虚拟桌面并写出临时 PNG（最多缩放到 1920px 宽）。
 - `overlay.ps1` — 实验功能：Windows WPF 流式浮窗（默认关闭；支持背景不透明度、字体、字号）。
 - `market/index.json` — 官方插件市场索引（格式 1，已通过官方校验器）。
 - `cordis.patch.yml` — 停用内置语音前端并插入本插件行。
@@ -177,6 +200,8 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - Host 端到端：`/hotkey/bind` 启动辅助进程并很快 ready；注入一次 F2 后 `/hotkey/poll` 返回 down/up；重复 bind 复用进程。
 - `GET /push-to-talk/api/status` 返回真实识别服务快照（SenseVoiceSmall (INT8)，`phase: ready`，语言 `auto`）。
 - `POST /push-to-talk/api/transcribe` 用 1 秒 16 kHz WAV 端到端返回 `{"ok":true,"text":"","audioSeconds":1,...}`。
+- 截图辅助进程实测：`ready` 约 0.6 秒；单次 `capture` 约 0.15 秒（1920×1080 PNG 约 430 KB）；Host `POST /screenshot/capture` 首次约 1.3 秒（含辅助进程启动），之后直接复用进程。
+- 两键全局按键实测：`DSH_PTT_KEY=F2` + `DSH_PTT_SHOT_KEY=F3` 时注入 F2/F3 分别得到 `down main/up main` 与 `down shot/up shot`，其它键不触发；重复键/非法键以 `error` 退出。
 - 回复浮窗（实验）探针测试通过：流式更新、最终显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7–0.9 秒就绪）；
   不透明模式实测捕获排除 `affinity=0x11`，半透明模式（60%、宋体 22px）正常显示与更新。
 - `POST /overlay/config` 实测可切换不透明度/字体/字号并在下一次显示生效（辅助进程按新配置重启）。

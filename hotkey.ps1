@@ -1,19 +1,27 @@
-# hotkey.ps1 - global single-key push-to-talk listener for the DSH push-to-talk plugin.
+# hotkey.ps1 - global key listener for the DSH push-to-talk plugin.
 #
 # Runs under Windows PowerShell 5.1 (launched as):
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File <dir>\hotkey.ps1
+#   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <dir>\hotkey.ps1
+#
+# Listens for two single keys at once:
+#   - the push-to-talk key (hold to dictate), from DSH_PTT_KEY
+#   - the screenshot key (press to capture and send), from DSH_PTT_SHOT_KEY
 #
 # Stdout protocol (one ASCII line per event, each line flushed immediately):
-#   ready              hook installed and message pump running; at most one per process
-#   down               target key went down (auto-repeat is suppressed)
-#   up                 target key came up (paired after a reported "down")
-#   error <reason>     fatal setup/runtime failure; process exits with code 1
+#   ready                    hook installed and message pump running; at most once
+#   down main                push-to-talk key went down (auto-repeat suppressed)
+#   up main                  push-to-talk key came up (paired after a "down main")
+#   down shot                screenshot key went down (auto-repeat suppressed)
+#   up shot                  screenshot key came up (paired after a "down shot")
+#   error <reason>           fatal setup/runtime failure; process exits with code 1
 #
-# Target key: environment variable DSH_PTT_KEY, one of
+# Target keys: environment variables, one of
 #   F1..F12, ControlLeft, ControlRight, AltLeft, AltRight, ShiftLeft, ShiftRight
-# Missing/unknown value -> "error invalid-key" and exit 1.
+# A missing/unknown DSH_PTT_KEY -> "error invalid-key" and exit 1.
+# A missing/empty DSH_PTT_SHOT_KEY simply disables the screenshot key.
+# The same key may not be bound twice -> "error duplicate-key" and exit 1.
 #
-# The key is never swallowed: CallNextHookEx is always invoked.
+# Keys are never swallowed: CallNextHookEx is always invoked.
 # Injected input (SendInput / keybd_event) is NOT filtered, so the listener also
 # works for synthetic events (this is required by the plugin's automated tests).
 #
@@ -45,20 +53,30 @@ function Stop-WithError {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Validate the target key before doing any expensive work.
+# 1. Validate the target keys before doing any expensive work.
 # ---------------------------------------------------------------------------
-$Key = $env:DSH_PTT_KEY
-if ([string]::IsNullOrEmpty($Key)) {
-    Stop-WithError 'invalid-key' 'DSH_PTT_KEY is not set'
-}
-$Key = $Key.Trim()
-
 $ValidKeys = @(
     'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
     'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight'
 )
-if ($ValidKeys -cnotcontains $Key) {
-    Stop-WithError 'invalid-key' ('unsupported DSH_PTT_KEY value: "' + $Key + '"')
+
+function Resolve-Key {
+    param([string]$Value, [string]$Name)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    $trimmed = $Value.Trim()
+    if ($ValidKeys -cnotcontains $trimmed) {
+        Stop-WithError 'invalid-key' ('unsupported ' + $Name + ' value: "' + $trimmed + '"')
+    }
+    return $trimmed
+}
+
+$Key = Resolve-Key $env:DSH_PTT_KEY 'DSH_PTT_KEY'
+if ([string]::IsNullOrEmpty($Key)) {
+    Stop-WithError 'invalid-key' 'DSH_PTT_KEY is not set'
+}
+$ShotKey = Resolve-Key $env:DSH_PTT_SHOT_KEY 'DSH_PTT_SHOT_KEY'
+if ($ShotKey -ne '' -and $ShotKey -ceq $Key) {
+    Stop-WithError 'duplicate-key' ('DSH_PTT_SHOT_KEY equals DSH_PTT_KEY: "' + $Key + '"')
 }
 
 # ---------------------------------------------------------------------------
@@ -66,7 +84,7 @@ if ($ValidKeys -cnotcontains $Key) {
 #
 #    The callback always forwards with CallNextHookEx. It runs on the thread
 #    that owns the message pump, so plain static state is safe (no locking
-#    needed for the down/up state machine; stdout writes are still serialized).
+#    needed for the down/up state machines; stdout writes are still serialized).
 # ---------------------------------------------------------------------------
 $HotkeySource = @'
 using System;
@@ -92,6 +110,15 @@ namespace DshPtt
             Control,
             Alt,
             Shift
+        }
+
+        private sealed class Target
+        {
+            public Kind Kind;
+            public int Vk;
+            public bool Right;
+            public bool IsDown;
+            public string Name;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -125,57 +152,83 @@ namespace DshPtt
         private static readonly object OutputLock = new object();
         private static LowLevelKeyboardProc _hookProc;
         private static IntPtr _hook = IntPtr.Zero;
-        private static Kind _kind = Kind.Function;
-        private static int _vk;
-        private static bool _right;
-        private static bool _isDown;
+        private static Target _main;
+        private static Target _shot;
+
+        private static bool ParseKey(string keyName, out Kind kind, out int vk, out bool right)
+        {
+            kind = Kind.Function;
+            vk = 0;
+            right = false;
+            switch (keyName)
+            {
+                case "ControlLeft":
+                    kind = Kind.Control; vk = 0x11; right = false; return true;
+                case "ControlRight":
+                    kind = Kind.Control; vk = 0x11; right = true; return true;
+                case "AltLeft":
+                    kind = Kind.Alt; vk = 0x12; right = false; return true;
+                case "AltRight":
+                    kind = Kind.Alt; vk = 0x12; right = true; return true;
+                case "ShiftLeft":
+                    kind = Kind.Shift; vk = 0x10; right = false; return true;
+                case "ShiftRight":
+                    kind = Kind.Shift; vk = 0x10; right = true; return true;
+                default:
+                    {
+                        int number;
+                        if (keyName == null || keyName.Length < 2 || keyName.Length > 3 || keyName[0] != 'F')
+                        {
+                            return false;
+                        }
+                        if (!int.TryParse(keyName.Substring(1), out number))
+                        {
+                            return false;
+                        }
+                        if (number < 1 || number > 12)
+                        {
+                            return false;
+                        }
+                        kind = Kind.Function;
+                        vk = 0x70 + (number - 1);
+                        right = false;
+                        return true;
+                    }
+            }
+        }
+
+        private static Target CreateTarget(string keyName, string targetName)
+        {
+            Kind kind;
+            int vk;
+            bool right;
+            if (!ParseKey(keyName, out kind, out vk, out right))
+            {
+                return null;
+            }
+            Target target = new Target();
+            target.Kind = kind;
+            target.Vk = vk;
+            target.Right = right;
+            target.Name = targetName;
+            return target;
+        }
 
         // Installs the global hook. Returns 0 on success, otherwise a Win32
         // error code (or -1 when no error code is available).
-        public static int Install(string keyName)
+        public static int Install(string mainKey, string shotKey)
         {
-            if (string.IsNullOrEmpty(keyName))
+            _main = CreateTarget(mainKey, "main");
+            if (_main == null)
+            {
+                return ERROR_INVALID_PARAMETER;
+            }
+            _shot = string.IsNullOrEmpty(shotKey) ? null : CreateTarget(shotKey, "shot");
+            if (shotKey != null && shotKey.Length > 0 && _shot == null)
             {
                 return ERROR_INVALID_PARAMETER;
             }
 
-            switch (keyName)
-            {
-                case "ControlLeft":
-                    _kind = Kind.Control; _vk = 0x11; _right = false; break;
-                case "ControlRight":
-                    _kind = Kind.Control; _vk = 0x11; _right = true; break;
-                case "AltLeft":
-                    _kind = Kind.Alt; _vk = 0x12; _right = false; break;
-                case "AltRight":
-                    _kind = Kind.Alt; _vk = 0x12; _right = true; break;
-                case "ShiftLeft":
-                    _kind = Kind.Shift; _vk = 0x10; _right = false; break;
-                case "ShiftRight":
-                    _kind = Kind.Shift; _vk = 0x10; _right = true; break;
-                default:
-                    {
-                        int number;
-                        if (keyName.Length < 2 || keyName.Length > 3 || keyName[0] != 'F')
-                        {
-                            return ERROR_INVALID_PARAMETER;
-                        }
-                        if (!int.TryParse(keyName.Substring(1), out number))
-                        {
-                            return ERROR_INVALID_PARAMETER;
-                        }
-                        if (number < 1 || number > 12)
-                        {
-                            return ERROR_INVALID_PARAMETER;
-                        }
-                        _kind = Kind.Function;
-                        _vk = 0x70 + (number - 1);
-                        _right = false;
-                        break;
-                    }
-            }
-
-            _isDown = false;
             _hookProc = HookCallback;
             IntPtr module = GetModuleHandle(null);
             _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, module, 0);
@@ -221,28 +274,26 @@ namespace DshPtt
             }
         }
 
-        private static bool IsTarget(ref KBDLLHOOKSTRUCT info)
+        private static bool IsTarget(ref KBDLLHOOKSTRUCT info, Target target)
         {
+            if (target == null) return false;
             int vk = (int)info.vkCode;
-            switch (_kind)
+            switch (target.Kind)
             {
                 case Kind.Function:
-                    return vk == _vk;
+                    return vk == target.Vk;
                 case Kind.Control:
-                    // Some sources (notably SendInput) report the side-specific
-                    // virtual key; hardware keyboards usually report the generic
-                    // VK_CONTROL plus the LLKHF_EXTENDED flag.
-                    if (vk == 0xA2) { return !_right; }
-                    if (vk == 0xA3) { return _right; }
-                    return vk == 0x11 && (((info.flags & LLKHF_EXTENDED) != 0) == _right);
+                    if (vk == 0xA2) { return !target.Right; }
+                    if (vk == 0xA3) { return target.Right; }
+                    return vk == 0x11 && (((info.flags & LLKHF_EXTENDED) != 0) == target.Right);
                 case Kind.Alt:
-                    if (vk == 0xA4) { return !_right; }
-                    if (vk == 0xA5) { return _right; }
-                    return vk == 0x12 && (((info.flags & LLKHF_EXTENDED) != 0) == _right);
+                    if (vk == 0xA4) { return !target.Right; }
+                    if (vk == 0xA5) { return target.Right; }
+                    return vk == 0x12 && (((info.flags & LLKHF_EXTENDED) != 0) == target.Right);
                 case Kind.Shift:
-                    if (vk == 0xA0) { return !_right; }
-                    if (vk == 0xA1) { return _right; }
-                    return vk == 0x10 && (ShiftIsRight(ref info) == _right);
+                    if (vk == 0xA0) { return !target.Right; }
+                    if (vk == 0xA1) { return target.Right; }
+                    return vk == 0x10 && (ShiftIsRight(ref info) == target.Right);
             }
             return false;
         }
@@ -261,8 +312,28 @@ namespace DshPtt
             // Fallback for odd drivers: MAPVK_VK_TO_VSC_EX returns the left-hand
             // scan code for keys that do not distinguish sides, but some
             // layouts/drivers report the right-hand one.
-            uint mapped = MapVirtualKey((uint)_vk, MAPVK_VK_TO_VSC_EX);
+            int vk = (int)info.vkCode;
+            uint mapped = MapVirtualKey((uint)vk, MAPVK_VK_TO_VSC_EX);
             return ((int)(mapped & 0xFF) == 0x36);
+        }
+
+        private static void Track(Target target, bool isDown)
+        {
+            if (target == null) return;
+            if (isDown)
+            {
+                // Repeat guard: only the first down after the last up.
+                if (!target.IsDown)
+                {
+                    target.IsDown = true;
+                    Emit("down " + target.Name);
+                }
+            }
+            else if (target.IsDown)
+            {
+                target.IsDown = false;
+                Emit("up " + target.Name);
+            }
         }
 
         private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -278,22 +349,13 @@ namespace DshPtt
                     {
                         KBDLLHOOKSTRUCT info =
                             (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                        if (IsTarget(ref info))
+                        if (IsTarget(ref info, _main))
                         {
-                            if (isDown)
-                            {
-                                // Repeat guard: only the first down after the last up.
-                                if (!_isDown)
-                                {
-                                    _isDown = true;
-                                    Emit("down");
-                                }
-                            }
-                            else if (_isDown)
-                            {
-                                _isDown = false;
-                                Emit("up");
-                            }
+                            Track(_main, isDown);
+                        }
+                        else if (IsTarget(ref info, _shot))
+                        {
+                            Track(_shot, isDown);
                         }
                     }
                 }
@@ -319,7 +381,7 @@ catch {
 }
 
 try {
-    $installError = [DshPtt.Hotkey]::Install($Key)
+    $installError = [DshPtt.Hotkey]::Install($Key, $ShotKey)
 }
 catch {
     Stop-WithError 'hook-install-failed' $_.Exception.Message
