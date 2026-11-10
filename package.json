@@ -1,6 +1,6 @@
 {
   "name": "dsh-push-to-talk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Hold-and-talk dictation, one-key screenshot sending and optional WeChat reply mirroring for DeepSeek Harness: hold to record and release to transcribe, press one key to capture the screen, or mirror the reply of that turn to your phone.",
   "icon": "./icon.svg",

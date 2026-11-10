@@ -179,6 +179,12 @@ globalThis.fetch = async (url, options) => {
           seq: hotkeyPollCount,
         }
       }
+      if (target.includes('/speech/config')) {
+        const payload = options?.body ? JSON.parse(options.body) : {}
+        if (typeof payload.providerId === 'string') status.selection.providerId = payload.providerId
+        if (typeof payload.language === 'string') status.selection.language = payload.language
+        return status
+      }
       if (target.includes('/screenshot/capture')) {
         // 1x1 transparent PNG.
         return {
@@ -227,8 +233,11 @@ const inputActions = {
 let submitted = 0
 const props = { sessionId: 'smoke-session', inputActions }
 
-const mic = byOwner.get('conversation.input.right')
-const dock = byOwner.get('conversation.composer.dock')
+const mic = registrations.find((entry) => entry.owner === 'conversation.input.right' && entry.options.id === 'push-to-talk-mic')
+const quick = registrations.find((entry) => entry.owner === 'conversation.input.right' && entry.options.id === 'push-to-talk-quick')
+const dock = registrations.find((entry) => entry.owner === 'conversation.composer.dock' && entry.options.id === 'push-to-talk-status')
+const panel = registrations.find((entry) => entry.owner === 'conversation.composer.dock' && entry.options.id === 'push-to-talk-panel')
+if (!mic || !quick || !dock || !panel) throw new Error('composer components are not all registered')
 const shortcut = registrations.find((entry) => entry.options.id === 'push-to-talk-shortcut')
 const keepWarm = registrations.find((entry) => entry.options.id === 'push-to-talk-keep-warm')
 const globalRow = registrations.find((entry) => entry.options.id === 'push-to-talk-global')
@@ -417,6 +426,40 @@ if (!wechatConfigCall || JSON.parse(wechatConfigCall.body).enabled !== true) {
 }
 const wechatOnTree = wechatRow.component({})
 if (!flatten(wechatOnTree).includes('已开启')) throw new Error('wechat row did not show the enabled state')
+
+// Quick settings: the gear button opens a dock row with the live switches.
+if (panel.component({}) !== null) throw new Error('quick panel should start collapsed')
+const quickTree = quick.component({})
+const gearButton = findButtons(quickTree)[0]
+if (!gearButton) throw new Error('quick settings button rendered nothing')
+gearButton.props.onClick()
+const openPanel = panel.component({})
+if (openPanel === null) throw new Error('quick panel did not open')
+const panelText = flatten(openPanel)
+if (!panelText.includes('回复同步到微信')) throw new Error('quick panel is missing the WeChat switch')
+if (!panelText.includes('识别语言')) throw new Error('quick panel is missing the language dropdown')
+const panelSelects = []
+const collectSelects = (node) => {
+  if (node === null || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const child of node) collectSelects(child)
+    return
+  }
+  if (node.type === 'select') panelSelects.push(node)
+  const children = Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]
+  for (const child of children) collectSelects(child)
+}
+collectSelects(openPanel)
+if (panelSelects.length < 2) throw new Error('quick panel should render provider and language selects: ' + panelSelects.length)
+const languageSelect = panelSelects[1]
+languageSelect.props.onChange({ target: { value: 'en' } })
+await new Promise((resolve) => setTimeout(resolve, 40))
+const speechCall = fetchCalls.filter((call) => call.url.includes('/speech/config')).pop()
+if (!speechCall || JSON.parse(speechCall.body).language !== 'en') throw new Error('language change did not reach the Host')
+// Collapse again; the row disappears (re-render first: the handler closes over state).
+const quickTreeOpen = quick.component({})
+findButtons(quickTreeOpen)[0].props.onClick()
+if (panel.component({}) !== null) throw new Error('quick panel did not collapse')
 
 // A failed microphone start keeps a retry action in the dock. Press the mic
 // button directly so the path does not depend on poll timing; Node has no

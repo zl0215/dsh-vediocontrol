@@ -57,6 +57,18 @@ dsh plugin --profile web add dsh-push-to-talk
 
 > 之所以限制为功能键/修饰键：单个字符键（如 V）一旦绑定，就必须在每次输入该字符时让路，会破坏正常打字。
 
+## 会话窗口里的快捷设置
+
+输入框右侧、麦克风按钮旁边有一个**齿轮按钮**，点开后会在输入框上方展开一行快捷设置，不需要再进设置页：
+
+- **回复同步到微信**：开/关（还需要先在设置 → 微信 绑定微信插件）；
+- **语音识别服务**：下拉选择（例如本机 SenseVoice / 云端服务）；
+- **识别语言**：下拉选择（自动识别 / 中文 / English 等，跟随所选服务支持的语言）；
+- **按住说话键**：下拉直接改（F1–F12 或左右 Ctrl/Alt/Shift，避免和打字冲突的限制不变）；
+- **截图键**：下拉直接改。
+
+点右侧「×」收起。修改会立即保存：语音服务/语言通过 Host 的 `speechToText.configure` 持久化，按键与开关存在浏览器本地，重启后仍生效。原来的设置页入口继续保留，两边改的是同一份配置。
+
 ## 全局快捷键（离开 DSH 也能用）
 
 打开 **设置 → 通用 → 「全局快捷键（其它软件中也能用）」**（默认开启）后：
@@ -179,6 +191,7 @@ POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听�
 POST /push-to-talk/api/overlay/config  回复浮窗（实验）：设置背景不透明度/字体/字号（{ opacity, fontFamily, fontSize }）
 POST /push-to-talk/api/wechat/config   回复同步到微信（实验）：{ enabled }
 GET  /push-to-talk/api/wechat/state    回复同步到微信（实验）：状态、是否可用、上次错误
+POST /push-to-talk/api/speech/config   会话快捷设置：切换识别服务/语言（{ providerId, language }），返回新的服务快照
 POST /push-to-talk/api/overlay/show    回复浮窗（实验）：直接显示一段文字（调试用）
 POST /push-to-talk/api/overlay/hide    回复浮窗（实验）：收起浮窗
 GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
@@ -229,6 +242,7 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
   不透明模式实测捕获排除 `affinity=0x11`，半透明模式（60%、宋体 22px）正常显示与更新。
 - `POST /overlay/config` 实测可切换不透明度/字体/字号并在下一次显示生效（辅助进程按新配置重启）。
 - 微信同步（实验）：客户端冒烟测试覆盖开关默认关闭、开启后持久化并推送到 Host；Host 可解析 `dsh-wechat-plugin` 的 `dsh-wechat-send` 模块（本机未绑定微信时发送会以退出码 2 失败并记录原因）。
+- 会话窗口快捷设置：客户端冒烟测试覆盖齿轮按钮、面板展开/收起、微信开关、识别语言下拉触发 `POST /speech/config`；Host `/speech/config` 实测可切换识别语言并持久化。
 - 用户已在真实桌面实测：其它软件中按 F2 完成「按键 → 识别 → 发送 → 助手执行」；按 F3 完成「截图 → 自动发送 → 会话收到图片消息」（1920×1080）。
 
 ## 测试

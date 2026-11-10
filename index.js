@@ -1224,6 +1224,35 @@ async function handle(req, res, ctx, hotkey, overlay, screenshot, wechat) {
     return
   }
 
+  if (path === '/speech/config' && req.method === 'POST') {
+    if (!speech) {
+      send(res, 503, fail('unavailable', '语音识别服务未启用：请启用语音输入插件包'))
+      return
+    }
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      send(res, error.code === 'tooLarge' ? 413 : 400, fail(error.code ?? 'badRequest', error.message))
+      return
+    }
+    const patch = {}
+    if (typeof body?.providerId === 'string' && body.providerId !== '') patch.providerId = body.providerId
+    if (typeof body?.language === 'string' && body.language !== '') patch.language = body.language
+    if (Object.keys(patch).length === 0) {
+      send(res, 400, fail('badRequest', '缺少识别服务或语言'))
+      return
+    }
+    try {
+      await speech.configure(patch)
+    } catch (error) {
+      send(res, 400, fail('configure', error instanceof Error ? error.message : String(error)))
+      return
+    }
+    send(res, 200, { ok: true, ...describe(speech.snapshot()) })
+    return
+  }
+
   if (path === '/wechat/config' && req.method === 'POST') {
     let body
     try {

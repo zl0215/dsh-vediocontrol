@@ -291,6 +291,21 @@ window.__ModuleLoader__.load({
       wechatTitle: '回复同步到微信',
       wechatDescOn: '已开启：用全局快捷键或 F3 触发的那一轮，最终回复会通过已绑定的微信机器人发到手机。',
       wechatDescOff: '默认关闭。开启后，按 F2/F3 触发的那一轮回复会发送到微信；需要先在「设置 → 微信」绑定微信插件。',
+      panelTitle: '快捷设置',
+      panelWechat: '回复同步到微信',
+      panelProvider: '语音识别服务',
+      panelLanguage: '识别语言',
+      panelUnavailable: '语音识别服务未启用',
+      panelClose: '收起快捷设置',
+      languageAuto: '自动识别',
+      languageZh: '中文',
+      languageEn: 'English',
+      languageJa: '日本語',
+      languageKo: '한국어',
+      languageYue: '粤语',
+      panelConfigureFailed: '切换失败：{message}',
+      panelVoiceKey: '按住说话键',
+      panelScreenshotKey: '截图键',
       keyControlLeft: '左 Ctrl',
       keyControlRight: '右 Ctrl',
       keyAltLeft: '左 Alt',
@@ -386,6 +401,21 @@ window.__ModuleLoader__.load({
       wechatTitle: 'Mirror replies to WeChat',
       wechatDescOn: 'On: the final reply of a global-key / F3 turn is sent to your phone through the bound WeChat bot.',
       wechatDescOff: 'Off by default. When on, the reply to a global-key / F3 turn is sent to WeChat; bind the WeChat plugin first (Settings → WeChat).',
+      panelTitle: 'Quick settings',
+      panelWechat: 'Mirror replies to WeChat',
+      panelProvider: 'Speech provider',
+      panelLanguage: 'Language',
+      panelUnavailable: 'Speech recognition is not enabled',
+      panelClose: 'Close quick settings',
+      languageAuto: 'Auto detect',
+      languageZh: 'Chinese',
+      languageEn: 'English',
+      languageJa: 'Japanese',
+      languageKo: 'Korean',
+      languageYue: 'Cantonese',
+      panelConfigureFailed: 'Could not switch: {message}',
+      panelVoiceKey: 'Push-to-talk key',
+      panelScreenshotKey: 'Screenshot key',
       keyControlLeft: 'Left Ctrl',
       keyControlRight: 'Right Ctrl',
       keyAltLeft: 'Left Alt',
@@ -784,6 +814,7 @@ window.__ModuleLoader__.load({
         screenshotKey: loadScreenshotKey(),
         screenshotEnabled: loadScreenshotEnabled(),
         wechatMirror: loadWechatMirror(),
+        panelOpen: false,
         capturingTarget: '',
       }
       applyKeepWarm(state.keepWarm)
@@ -945,6 +976,36 @@ window.__ModuleLoader__.load({
         storeWechatMirror(next)
         emit({ wechatMirror: next })
         void syncWechatMirror()
+      }
+
+      function setPanelOpen(value) {
+        emit({ panelOpen: value === true })
+      }
+
+      /** Persist a speech provider or language change through the Host service. */
+      async function configureSpeech(patch) {
+        if (disposed) return false
+        try {
+          const response = await fetch(API + '/speech/config', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          })
+          let data = null
+          try {
+            data = await response.json()
+          } catch {}
+          if (!response.ok || data === null || data.ok !== true) {
+            throw new Error(data?.error?.message ?? 'HTTP ' + response.status)
+          }
+          emit({ status: data, statusError: '' })
+          return true
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          notice(t('panelConfigureFailed', { message }))
+          return false
+        }
       }
 
       /** Tell the Host which single key the global helper should listen for. */
@@ -1848,6 +1909,8 @@ window.__ModuleLoader__.load({
         captureAndSendScreenshot,
         setWechatMirror,
         syncWechatMirror,
+        setPanelOpen,
+        configureSpeech,
         setPermission,
         setKeepWarm,
         setGlobalHotkey,
@@ -1932,6 +1995,13 @@ window.__ModuleLoader__.load({
 .dpt-setting-title{font-weight:500;font-size:13px}
 .dpt-setting-desc{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.45}
 .dpt-setting-warn{color:var(--dsw-alias-state-warn-primary);font-size:11px;line-height:1.4}
+.dpt-gear{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color .15s ease,color .15s ease}
+.dpt-gear:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dpt-gear:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.dpt-gear[data-active="true"]{color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+.dpt-gear svg{display:block;pointer-events:none}
+.dpt-panel-title{font-weight:600;font-size:12px;color:var(--dsw-alias-label-primary);margin-right:2px}
+.dpt-panel-select{font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .dpt-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:8px}
 .dpt-field{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dpt-range{width:110px;accent-color:var(--dsw-alias-brand-primary)}
@@ -2588,6 +2658,168 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /** Composer button that opens the in-conversation quick settings panel. */
+      function QuickButton() {
+        useLocale()
+        const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
+        const t = controller.t
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'dpt-gear',
+            'aria-label': t('panelTitle'),
+            title: t('panelTitle'),
+            'data-active': state.panelOpen ? 'true' : 'false',
+            onClick: () => controller.setPanelOpen(!state.panelOpen),
+          },
+          h(
+            'svg',
+            {
+              width: 16,
+              height: 16,
+              viewBox: '0 0 24 24',
+              fill: 'none',
+              stroke: 'currentColor',
+              strokeWidth: 2,
+              strokeLinecap: 'round',
+            },
+            h('path', { d: 'M4 7h10M18 7h2M4 17h4M12 17h8' }),
+            h('circle', { cx: 16, cy: 7, r: 2 }),
+            h('circle', { cx: 10, cy: 17, r: 2 }),
+          ),
+        )
+      }
+
+      /** Dock row above the composer: the settings people change while chatting. */
+      function QuickPanel() {
+        useLocale()
+        const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
+        const t = controller.t
+        if (!state.panelOpen) return null
+        const status = state.status
+        const providers = Array.isArray(status?.providers) ? status.providers : []
+        const selection = status?.selection ?? {}
+        const current = providers.find((provider) => provider.id === selection.providerId) ?? providers[0]
+        const languages =
+          current !== undefined && Array.isArray(current.languages) && current.languages.length > 0
+            ? current.languages
+            : ['auto']
+        const languageLabel = (code) => {
+          const names = {
+            auto: t('languageAuto'),
+            zh: t('languageZh'),
+            en: t('languageEn'),
+            ja: t('languageJa'),
+            ko: t('languageKo'),
+            yue: t('languageYue'),
+          }
+          return names[code] ?? code
+        }
+        const children = [
+          h('span', { className: 'dpt-panel-title' }, t('panelTitle')),
+          h(
+            'label',
+            { className: 'dpt-field' },
+            h('span', null, t('panelWechat')),
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'switch',
+                'aria-checked': state.wechatMirror ? 'true' : 'false',
+                className: 'dpt-button',
+                'data-primary': state.wechatMirror ? 'true' : 'false',
+                onClick: () => controller.setWechatMirror(!state.wechatMirror),
+              },
+              state.wechatMirror ? t('on') : t('off'),
+            ),
+          ),
+        ]
+        if (status === null) {
+          children.push(h('span', { className: 'dpt-label' }, t('panelUnavailable')))
+        } else {
+          children.push(
+            h(
+              'label',
+              { className: 'dpt-field' },
+              h('span', null, t('panelProvider')),
+              h(
+                'select',
+                {
+                  className: 'dpt-panel-select',
+                  value: selection.providerId ?? '',
+                  onChange: (event) => void controller.configureSpeech({ providerId: event.target.value }),
+                },
+                providers.map((provider) => h('option', { key: provider.id, value: provider.id }, provider.name)),
+              ),
+            ),
+            h(
+              'label',
+              { className: 'dpt-field' },
+              h('span', null, t('panelLanguage')),
+              h(
+                'select',
+                {
+                  className: 'dpt-panel-select',
+                  value: selection.language ?? '',
+                  onChange: (event) => void controller.configureSpeech({ language: event.target.value }),
+                },
+                languages.map((code) => h('option', { key: code, value: code }, languageLabel(code))),
+              ),
+            ),
+          )
+        }
+        const keyOptions = [
+          'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+          'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight',
+        ]
+        children.push(
+          h(
+            'label',
+            { className: 'dpt-field' },
+            h('span', null, t('panelVoiceKey')),
+            h(
+              'select',
+              {
+                className: 'dpt-panel-select',
+                value: state.keyCode,
+                onChange: (event) => controller.setKeyBinding(event.target.value),
+              },
+              keyOptions.map((code) => h('option', { key: code, value: code }, controller.keyLabel(code))),
+            ),
+          ),
+          h(
+            'label',
+            { className: 'dpt-field' },
+            h('span', null, t('panelScreenshotKey')),
+            h(
+              'select',
+              {
+                className: 'dpt-panel-select',
+                value: state.screenshotKey,
+                onChange: (event) => controller.setScreenshotKey(event.target.value),
+              },
+              keyOptions.map((code) => h('option', { key: code, value: code }, controller.keyLabel(code))),
+            ),
+          ),
+        )
+        children.push(
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dpt-icon-button',
+              'aria-label': t('panelClose'),
+              title: t('panelClose'),
+              onClick: () => controller.setPanelOpen(false),
+            },
+            '×',
+          ),
+        )
+        return dock('brand', ...children)
+      }
+
       function providerUsablePhase(phase) {
         return phase === 'ready' || phase === 'standby' || phase === 'waking'
       }
@@ -2624,6 +2856,16 @@ window.__ModuleLoader__.load({
           MicButton,
         ),
       )
+      ctx.slots.inject('conversation.input.right', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.input.right',
+            id: 'push-to-talk-quick',
+            order: 11,
+          },
+          QuickButton,
+        ),
+      )
       ctx.slots.inject('conversation.composer.dock', () =>
         ctx.slots.register(
           {
@@ -2632,6 +2874,16 @@ window.__ModuleLoader__.load({
             order: 5,
           },
           StatusBar,
+        ),
+      )
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.composer.dock',
+            id: 'push-to-talk-panel',
+            order: 6,
+          },
+          QuickPanel,
         ),
       )
       ctx.slots.inject('settings.general.item', () =>
