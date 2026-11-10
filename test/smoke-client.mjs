@@ -261,6 +261,7 @@ if (!overlayTree) throw new Error('overlay settings row rendered nothing')
 const flatten = (node) => {
   if (node === null || node === undefined) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(flatten).join(' ')
   const children = Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]
   return children.map(flatten).join(' ')
 }
@@ -268,11 +269,19 @@ if (!flatten(shortcutTree).includes('F2')) throw new Error('shortcut row does no
 
 const findButtons = (node, found = []) => {
   if (node === null || typeof node !== 'object') return found
+  if (Array.isArray(node)) {
+    for (const child of node) findButtons(child, found)
+    return found
+  }
   if (node.type === 'button') found.push(node)
   const children = Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]
   for (const child of children) findButtons(child, found)
   return found
 }
+
+// Let the capture path reach getUserMedia; Node has no microphone stack, so the
+// start still fails, which is exactly the failure the retry action covers.
+status.providers[0].preparation = { phase: 'ready' }
 
 const keydownHandlers = windowListeners.get('keydown') ?? []
 if (keydownHandlers.length === 0) throw new Error('no global keydown listener registered')
@@ -389,6 +398,23 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 if (storage.get('dsh.push-to-talk.overlay') !== '0') throw new Error('disabling the overlay was not persisted')
 const overlayOffTree = overlayRow.component({})
 if (!flatten(overlayOffTree).includes('已关闭')) throw new Error('overlay row did not show the disabled state')
+
+// A failed microphone start keeps a retry action in the dock. Press the mic
+// button directly so the path does not depend on poll timing; Node has no
+// microphone stack, so the start fails with the localized error notice.
+const micButtonNode = findButtons(micTree)[0]
+micButtonNode.props.onPointerDown({
+  pointerType: 'touch',
+  pointerId: 1,
+  clientY: 0,
+  button: 0,
+  preventDefault() {},
+  currentTarget: { setPointerCapture() {} },
+})
+await new Promise((resolve) => setTimeout(resolve, 250))
+const failedDock = dock.component(props)
+const retryButtons = findButtons(failedDock).filter((button) => flatten(button).trim() === '重试')
+if (retryButtons.length === 0) throw new Error('a failed microphone start did not offer a retry action')
 
 console.log('smoke ok')
 console.log('  injections:', plugin.inject.join(', '))

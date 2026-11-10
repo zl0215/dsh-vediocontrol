@@ -115,6 +115,14 @@ dsh plugin --profile web add dsh-push-to-talk
 
 **松开 → 文字发出**：录音收尾 + 本机识别通常 0.2–0.6 秒（SenseVoice 对 1 秒音频约几十毫秒）。
 
+**如果提示「语音识别失败：Could not start audio source」**：这是浏览器打不开麦克风设备（`NotReadableError`），常见原因有：
+
+- 会议/录音软件正占用麦克风（例如腾讯会议、OBS、录音机）；
+- Windows 隐私设置里禁用了麦克风访问（设置 → 隐私和安全性 → 麦克风 → 允许桌面应用访问）；
+- 蓝牙耳机刚切换了音频配置，设备短暂不可用。
+
+插件在打开设备失败时会**自动重试一次**；仍失败时提示条里会出现「重试」按钮，关闭占用程序后点一下即可，不必重新按键。
+
 ## 依赖
 
 - 已启用 `@deepseek-ai/dsh-experimental-voice-input-bundle` 提供的 Host 侧语音识别行（`speech-to-text`、`speech-to-text-sensevoice`、`api-speech-to-text`）。本插件只替换前端交互，不替换后端。
@@ -194,7 +202,8 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 
 - `node --check` 通过（`index.js`、`client.js`）。
 - 离线冒烟测试通过（`node test/smoke-client.mjs`）：加载浏览器模块、执行 `apply()`、注册各入口、渲染组件、
-  拦截默认 F2 按键、重新绑定按键并持久化、切换「麦克风常驻」「全局快捷键」「回复浮窗」并持久化。
+  拦截默认 F2 按键、重新绑定按键并持久化、截图键改绑与截图请求、切换「麦克风常驻」「全局快捷键」「回复浮窗」并持久化，
+  以及麦克风启动失败后提示条里的「重试」操作。
 - 全局按键辅助进程 `hotkey.ps1` 独立测试通过：18 个可绑定按键的 `ready/down main/up main`、非目标键不触发、
   长按自动重复只上报一次、20 秒存活与继续工作；`spawn → ready` 实测 0.65–1.13 秒。
 - Host 端到端：`/hotkey/bind` 启动辅助进程并很快 ready；注入一次 F2 后 `/hotkey/poll` 返回 down/up；重复 bind 复用进程。

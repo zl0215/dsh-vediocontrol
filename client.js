@@ -225,6 +225,8 @@ window.__ModuleLoader__.load({
       unavailable: '当前浏览器不支持录音。',
       permission: '麦克风权限未开启，请在浏览器和系统设置中允许访问。',
       deviceMissing: '麦克风不可用，请检查输入设备。',
+      deviceBusy: '麦克风无法启动：可能被其它程序占用（会议/录音软件），或系统里禁用了麦克风。请关闭占用程序后重试。',
+      retry: '重试',
       interrupted: '录音中断，请重试。',
       serviceOff: '语音识别服务未启用：请启用语音输入插件包',
       requestFailed: '无法连接语音服务：{message}',
@@ -315,6 +317,8 @@ window.__ModuleLoader__.load({
       unavailable: 'This browser cannot record audio.',
       permission: 'Microphone access is blocked. Allow it in the browser and system settings.',
       deviceMissing: 'No microphone is available. Check the input device.',
+      deviceBusy: 'Could not start the microphone: another app (meeting/recording) may be using it, or the system disabled it. Close that app and retry.',
+      retry: 'Retry',
       interrupted: 'Recording was interrupted. Please try again.',
       serviceOff: 'Speech recognition is not enabled: enable the voice input bundle',
       requestFailed: 'Cannot reach the speech service: {message}',
@@ -533,22 +537,42 @@ window.__ModuleLoader__.load({
         await this.preview()
       }
 
+      /** One getUserMedia attempt set: maps browser errors to user-facing kinds. */
+      async openMicrophone() {
+        const devices = navigator.mediaDevices
+        if (!devices) throw new RecordingError('unavailable')
+        const constraints = {
+          audio: { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        }
+        const mapError = (error) => {
+          if (!(error instanceof DOMException)) return error
+          if (error.name === 'NotAllowedError' || error.name === 'SecurityError') return new RecordingError('permission')
+          if (error.name === 'NotFoundError' || error.name === 'OverconstrainedError') return new RecordingError('deviceMissing')
+          if (error.name === 'NotReadableError' || error.name === 'AbortError') return new RecordingError('deviceBusy')
+          return error
+        }
+        try {
+          return await devices.getUserMedia(constraints)
+        } catch (error) {
+          // A device released a moment ago (a meeting app, a Bluetooth profile
+          // switch) can fail once with NotReadableError; retry once.
+          if (error instanceof DOMException && error.name === 'NotReadableError') {
+            await new Promise((resolve) => setTimeout(resolve, 300))
+            try {
+              return await devices.getUserMedia(constraints)
+            } catch (retryError) {
+              throw mapError(retryError)
+            }
+          }
+          throw mapError(error)
+        }
+      }
+
       async preview() {
         const devices = navigator.mediaDevices
         if (!devices) throw new RecordingError('unavailable')
-        let stream
-        try {
-          stream = await devices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-            video: false,
-          })
-        } catch (error) {
-          if (error instanceof DOMException) {
-            if (error.name === 'NotAllowedError') throw new RecordingError('permission')
-            if (error.name === 'NotFoundError' || error.name === 'OverconstrainedError') throw new RecordingError('deviceMissing')
-          }
-          throw error
-        }
+        const stream = await this.openMicrophone()
         if (this.lifetime.signal.aborted) {
           stream.getTracks().forEach((track) => track.stop())
           throw new RecordingError('cancelled')
@@ -725,6 +749,7 @@ window.__ModuleLoader__.load({
         keyCode: loadStoredKey(),
         capturingKey: false,
         noticeTone: 'error',
+        noticeRetry: false,
         inputMode: 'pointer',
         permission: 'unknown',
         keepWarm: loadKeepWarm(),
@@ -742,6 +767,7 @@ window.__ModuleLoader__.load({
       }
       applyKeepWarm(state.keepWarm)
       let recording = null
+      let lastStart = null
       let binding = null
       let generation = 0
       let pointerId = null
@@ -789,8 +815,16 @@ window.__ModuleLoader__.load({
           noticeId = 0
         }
       }
-      const notice = (message, tone = 'error') => {
-        emit({ phase: 'notice', message, noticeTone: tone, levels: IDLE_LEVELS, elapsed: 0, dragCancel: false })
+      const notice = (message, tone = 'error', retry = false) => {
+        emit({
+          phase: 'notice',
+          message,
+          noticeTone: tone,
+          noticeRetry: retry,
+          levels: IDLE_LEVELS,
+          elapsed: 0,
+          dragCancel: false,
+        })
         clearNotice()
         noticeId = setTimeout(() => {
           noticeId = 0
@@ -1445,6 +1479,7 @@ window.__ModuleLoader__.load({
 
       async function begin(options) {
         if (disposed || BUSY.has(state.phase)) return
+        lastStart = options
         const provider = selectedProvider(state.status)
         if (state.status !== null && provider && provider.preparation?.phase === 'unprepared') {
           emit({ phase: 'setup' })
@@ -1482,7 +1517,7 @@ window.__ModuleLoader__.load({
           await capture.start((failure) => {
             if (run !== generation) return
             void cancel('')
-            notice(failureText(failure))
+            notice(failureText(failure), 'error', true)
           })
           if (run !== generation) return
           if (releasedEarly) {
@@ -1509,8 +1544,14 @@ window.__ModuleLoader__.load({
         } catch (failure) {
           if (run !== generation) return
           await cancel('')
-          notice(failureText(failure))
+          notice(failureText(failure), 'error', true)
         }
+      }
+
+      /** Repeat the last start attempt after a notice (mic busy, device error). */
+      function retry() {
+        if (disposed || BUSY.has(state.phase) || lastStart === null) return
+        void begin(lastStart)
       }
 
       function move(event) {
@@ -1756,6 +1797,7 @@ window.__ModuleLoader__.load({
         applyPending,
         discardPending,
         dismiss,
+        retry,
         refreshStatus,
         setActiveSession,
         setSlotContext,
@@ -2147,6 +2189,9 @@ window.__ModuleLoader__.load({
           return dock(
             state.noticeTone === 'success' ? 'success' : 'error',
             h('span', { className: 'dpt-label' }, state.message),
+            state.noticeRetry
+              ? h('button', { type: 'button', className: 'dpt-button', 'data-primary': 'true', onClick: () => controller.retry() }, t('retry'))
+              : null,
             h('button', { type: 'button', className: 'dpt-icon-button', 'aria-label': t('dismiss'), title: t('dismiss'), onClick: () => controller.dismiss() }, '×'),
           )
         }
