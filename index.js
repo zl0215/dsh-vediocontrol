@@ -553,15 +553,6 @@ function createOverlayBridge(ctx) {
   let visible = false
   let streamText = ''
   let flushTimer = null
-  let seenSessionEvents = 0
-  let seenStreamFrames = 0
-  let lastSessionEventType = ''
-  let lastSessionArgType = ''
-  let lastSessionArgId = ''
-  let lastStreamAgentId = ''
-  let lastMessageSession = ''
-  let lastMessageChars = 0
-  let matchedStreamFrames = 0
   const config = {
     opacity: OVERLAY_DEFAULT_OPACITY,
     fontFamily: OVERLAY_DEFAULT_FONT,
@@ -575,17 +566,6 @@ function createOverlayBridge(ctx) {
     armed: armedSession !== null,
     visible,
     lastText: lastText.slice(0, 80),
-    debug: {
-      seenSessionEvents,
-      seenStreamFrames,
-      lastSessionEventType,
-      lastSessionArgType,
-      lastSessionArgId,
-      lastStreamAgentId,
-      lastMessageSession,
-      lastMessageChars,
-      matchedStreamFrames,
-    },
     config: { ...config },
   })
 
@@ -798,10 +778,7 @@ function createOverlayBridge(ctx) {
 
   /** Mirror the process-local assistant stream for the armed session. */
   function handleAssistantStream(sessionId, frame) {
-    seenStreamFrames += 1
-    lastStreamAgentId = typeof sessionId === 'string' ? sessionId : ''
     if (armedSession === null || normalizeSessionId(sessionId) !== armedSession) return
-    matchedStreamFrames += 1
     const type = frame?.type
     if (type === 'start') {
       clearStream()
@@ -817,23 +794,8 @@ function createOverlayBridge(ctx) {
 
   /** Mirror the durable session feed; the caller filters by armed session. */
   function handleSessionEvent(session, event) {
-    seenSessionEvents += 1
-    lastSessionEventType = typeof event?.type === 'string' ? event.type : ''
-    lastSessionArgType = typeof session
-    lastSessionArgId =
-      session === null || session === undefined
-        ? ''
-        : typeof session === 'string'
-          ? session
-          : typeof session.id === 'string'
-            ? session.id
-            : ''
     const type = event?.type
     const text = type === 'assistant/message' ? messageText(event.data?.message) : ''
-    if (type === 'assistant/message') {
-      lastMessageSession = typeof session?.id === 'string' ? session.id : ''
-      lastMessageChars = text.length
-    }
     if (armedSession === null) return
     if (session === undefined || normalizeSessionId(session.id) !== armedSession) return
     if (type === 'assistant/message') {

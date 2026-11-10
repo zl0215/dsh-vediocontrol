@@ -195,7 +195,7 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - `node --check` 通过（`index.js`、`client.js`）。
 - 离线冒烟测试通过（`node test/smoke-client.mjs`）：加载浏览器模块、执行 `apply()`、注册各入口、渲染组件、
   拦截默认 F2 按键、重新绑定按键并持久化、切换「麦克风常驻」「全局快捷键」「回复浮窗」并持久化。
-- 全局按键辅助进程 `hotkey.ps1` 独立测试通过：18 个可绑定按键的 `ready/down/up`、非目标键不触发、
+- 全局按键辅助进程 `hotkey.ps1` 独立测试通过：18 个可绑定按键的 `ready/down main/up main`、非目标键不触发、
   长按自动重复只上报一次、20 秒存活与继续工作；`spawn → ready` 实测 0.65–1.13 秒。
 - Host 端到端：`/hotkey/bind` 启动辅助进程并很快 ready；注入一次 F2 后 `/hotkey/poll` 返回 down/up；重复 bind 复用进程。
 - `GET /push-to-talk/api/status` 返回真实识别服务快照（SenseVoiceSmall (INT8)，`phase: ready`，语言 `auto`）。
@@ -205,7 +205,30 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - 回复浮窗（实验）探针测试通过：流式更新、最终显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7–0.9 秒就绪）；
   不透明模式实测捕获排除 `affinity=0x11`，半透明模式（60%、宋体 22px）正常显示与更新。
 - `POST /overlay/config` 实测可切换不透明度/字体/字号并在下一次显示生效（辅助进程按新配置重启）。
-- 待用户实测：离开 DSH、在其它软件中按 F2 的完整链路（按键 → 识别 → 发送 → 助手执行）。
+- 用户已在真实桌面实测：其它软件中按 F2 完成「按键 → 识别 → 发送 → 助手执行」；按 F3 完成「截图 → 自动发送 → 会话收到图片消息」（1920×1080）。
+
+## 测试
+
+在仓库根目录运行（Windows）：
+
+```powershell
+# 全部测试（约 1–2 分钟）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File test\run-tests.ps1
+
+# 跳过较慢的 18 键矩阵
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File test\run-tests.ps1 -SkipSlow
+```
+
+也可以单独运行：
+
+| 命令 | 覆盖内容 |
+|---|---|
+| `node test/smoke-client.mjs` | 浏览器插件：注册项、按键拦截与改绑、各设置行、截图键改绑与截图请求 |
+| `powershell -File test/hotkey-shot-smoke.ps1` | 两键钩子协议：`down main`/`down shot`、重复/非法键报错 |
+| `powershell -File test/hotkey-smoke.ps1 -SkipLiveness` | 18 个可绑定按键、自动重复、左右修饰键识别 |
+| `powershell -File test/overlay-probe.ps1` | 回复浮窗：流式更新、不透明度/字体、自动隐藏、退出 |
+
+Node.js ≥ 20 与 Windows PowerShell 5.1 是运行测试的前置条件；辅助进程测试需要正常的交互式桌面会话（会注入真实按键）。
 
 ## 发布到插件市场
 

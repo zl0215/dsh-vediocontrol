@@ -1,6 +1,6 @@
 {
   "name": "dsh-push-to-talk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Hold-and-talk dictation and one-key screenshot sending for DeepSeek Harness: hold to record and release to transcribe, or press one key to capture the screen and send it to the current session.",
   "icon": "./icon.svg",
