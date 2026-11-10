@@ -26,8 +26,11 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync, readdirSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROUTE_PREFIX = '/push-to-talk/api'
 /** Matches the voice-input bundle's default advertised recording limits. */
@@ -46,6 +49,8 @@ const SCREENSHOT_READY_TIMEOUT_MS = 20_000
 const SCREENSHOT_CAPTURE_TIMEOUT_MS = 20_000
 const SCREENSHOT_MAX_WIDTH = 1920
 const SCREENSHOT_MAX_BYTES = 32 * 1024 * 1024
+/** One WeChat message carries the reply; longer text is truncated for chat. */
+const WECHAT_MAX_CHARS = 4000
 const OVERLAY_READY_TIMEOUT_MS = 20_000
 const OVERLAY_MAX_CHARS = 1200
 const OVERLAY_SECONDS = 10
@@ -544,7 +549,7 @@ function createScreenshotBridge(ctx) {
  * topmost, click-through text window. The Host arms it after a dictation and
  * feeds the assistant's reply text from the durable session feed.
  */
-function createOverlayBridge(ctx) {
+function createOverlayBridge(ctx, hooks = {}) {
   let child = null
   let ready = false
   let error = ''
@@ -800,7 +805,12 @@ function createOverlayBridge(ctx) {
     if (session === undefined || normalizeSessionId(session.id) !== armedSession) return
     if (type === 'assistant/message') {
       clearStream()
-      if (text !== '') show(text)
+      if (text !== '') {
+        show(text)
+        try {
+          hooks.onAssistantText?.(normalizeSessionId(session.id), text)
+        } catch {}
+      }
       return
     }
     if (type === 'turn/end') {
@@ -808,6 +818,9 @@ function createOverlayBridge(ctx) {
       if (reason?.kind === 'error' && lastText === '') {
         show('请求失败：' + (reason.error?.message ?? '未知错误'))
       }
+      try {
+        hooks.onTurnEnd?.(armedSession)
+      } catch {}
       disarm()
     }
   }
@@ -834,6 +847,138 @@ function createOverlayBridge(ctx) {
   return { arm, disarm, show, stream, hide, configure, state, handleAssistantStream, handleSessionEvent, dispose }
 }
 
+/**
+ * Optional bridge to the WeChat channel plugin.
+ *
+ * The WeChat plugin owns the account, the reply window and the queue, so this
+ * integration never talks to iLink itself: it resolves the plugin's own
+ * `dsh-wechat-send` command module from the profile and runs it in-process for
+ * the final reply of one dictation/screenshot turn. The command shares the
+ * plugin's reply-window ledger, queues refusals, and reports exit codes.
+ */
+function createWechatMirror(ctx) {
+  let enabled = false
+  let lastError = ''
+  let lastSentAt = 0
+  let buffer = ''
+  let bufferedSession = ''
+  let cliModule = undefined
+
+  const state = () => ({
+    enabled,
+    available: findWechatCli() !== '',
+    lastError,
+    lastSentAt,
+    pending: buffer !== '',
+  })
+
+  function configure(patch) {
+    if (patch === null || typeof patch !== 'object') return state()
+    if (typeof patch.enabled === 'boolean') enabled = patch.enabled
+    if (!enabled) {
+      buffer = ''
+      bufferedSession = ''
+    }
+    return state()
+  }
+
+  /** Keep the reply of the current turn; one WeChat message per dictation turn. */
+  function accumulate(sessionId, text) {
+    if (!enabled || typeof text !== 'string' || text.trim() === '') return
+    const id = normalizeSessionId(sessionId)
+    if (bufferedSession !== id) {
+      bufferedSession = id
+      buffer = ''
+    }
+    if (buffer !== '') buffer += '\n\n'
+    buffer += text
+    if (buffer.length > WECHAT_MAX_CHARS * 2) buffer = buffer.slice(0, WECHAT_MAX_CHARS * 2)
+  }
+
+  /** Send the buffered reply once the turn ends. Fire-and-forget by design. */
+  async function flush(sessionId) {
+    const id = normalizeSessionId(sessionId)
+    const text = clamp(buffer)
+    buffer = ''
+    bufferedSession = ''
+    if (!enabled || text === '') return
+    try {
+      // A conversation already bound to WeChat receives the reply through the
+      // channel itself; sending it again would duplicate it on the phone.
+      try {
+        const channel = ctx.get('wechatChannel')
+        if (channel !== undefined && channel !== null && typeof channel.bindings === 'function') {
+          const bindings = await channel.bindings()
+          if (Array.isArray(bindings) && bindings.some((entry) => normalizeSessionId(entry?.sessionId) === id)) {
+            return
+          }
+        }
+      } catch {}
+      const cli = await loadCli()
+      if (cli === null) {
+        lastError = '未找到 dsh-wechat-plugin：请先安装并启用微信插件'
+        return
+      }
+      let result
+      try {
+        result = await cli.runCli([text], { out() {}, err() {} })
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        return
+      }
+      if (result !== undefined && result !== null && (result.code === 0 || result.code === 3)) {
+        lastError = result.code === 3 ? '微信回复窗口已用完，消息已排队' : ''
+        lastSentAt = Date.now()
+      } else {
+        const detail = Array.isArray(result?.err) ? result.err.join(' ') : ''
+        lastError = detail || `微信发送失败（退出码 ${String(result?.code ?? '?')}）`
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  function clamp(value) {
+    const text = String(value ?? '').trim()
+    if (text === '') return ''
+    if (text.length <= WECHAT_MAX_CHARS) return text
+    return text.slice(0, WECHAT_MAX_CHARS - 1) + '…'
+  }
+
+  /** Locate the WeChat plugin's send command in the active profile. */
+  function findWechatCli() {
+    const home = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+    const profiles = join(home, 'profiles')
+    try {
+      for (const name of readdirSync(profiles)) {
+        const candidate = join(profiles, name, 'node_modules', 'dsh-wechat-plugin', 'lib', 'cli.js')
+        if (existsSync(candidate)) return candidate
+      }
+    } catch {}
+    return ''
+  }
+
+  let cliPromise = null
+  async function loadCli() {
+    if (cliModule !== undefined) return cliModule
+    if (cliPromise !== null) return cliPromise
+    const file = findWechatCli()
+    if (file === '') return null
+    cliPromise = import(pathToFileURL(file).href)
+      .then((module) => {
+        cliModule = typeof module.runCli === 'function' ? module : null
+        return cliModule
+      })
+      .catch(() => {
+        cliModule = null
+        return null
+      })
+    return cliPromise
+  }
+
+  return { configure, state, accumulate, flush }
+}
+
 function normalizeSessionId(value) {
   if (typeof value !== 'string') return ''
   return value.startsWith('session-') ? value.slice('session-'.length) : value
@@ -857,7 +1002,7 @@ function messageText(message) {
   return normalizeOverlayText(parts.join('\n'))
 }
 
-async function handle(req, res, ctx, hotkey, overlay, screenshot) {
+async function handle(req, res, ctx, hotkey, overlay, screenshot, wechat) {
   if (!isLoopback(req)) {
     send(res, 403, fail('forbidden', '仅允许本机访问语音接口'))
     return
@@ -1079,15 +1224,38 @@ async function handle(req, res, ctx, hotkey, overlay, screenshot) {
     return
   }
 
+  if (path === '/wechat/config' && req.method === 'POST') {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      send(res, error.code === 'tooLarge' ? 413 : 400, fail(error.code ?? 'badRequest', error.message))
+      return
+    }
+    send(res, 200, { ok: true, ...wechat.configure(body) })
+    return
+  }
+
+  if (path === '/wechat/state' && req.method === 'GET') {
+    send(res, 200, { ok: true, ...wechat.state() })
+    return
+  }
+
   send(res, 404, fail('notFound', '未知的语音接口'))
 }
 
 export function apply(ctx) {
   const hotkey = createHotkeyBridge(ctx)
-  const overlay = createOverlayBridge(ctx)
+  const wechat = createWechatMirror(ctx)
+  const overlay = createOverlayBridge(ctx, {
+    onAssistantText: (sessionId, text) => wechat.accumulate(sessionId, text),
+    onTurnEnd: (sessionId) => {
+      void wechat.flush(sessionId)
+    },
+  })
   const screenshot = createScreenshotBridge(ctx)
   const handler = (req, res) => {
-    Promise.resolve(handle(req, res, ctx, hotkey, overlay, screenshot)).catch((error) => {
+    Promise.resolve(handle(req, res, ctx, hotkey, overlay, screenshot, wechat)).catch((error) => {
       try {
         ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
       } catch {}

@@ -152,6 +152,17 @@ dsh plugin --profile web add dsh-push-to-talk
 - 关闭后：不再启动浮窗辅助进程，插件只做语音输入，不显示任何浮窗。
 - 实现：可选的 `overlay.ps1` 辅助进程（本机 PowerShell/WPF，通过 stdin 接收流式与最终文字）。
 
+## 回复同步到微信（实验，默认关闭）
+
+如果你装了微信插件（`dsh-wechat-plugin`）并绑定了手机，可以把这个开关打开：
+
+- **开关路径**：设置 → 通用 → 「回复同步到微信」。
+- **行为**：只对**通过 F2 语音或 F3 截图触发的那一轮**生效——该轮结束时，把最终回复（一轮合并成一条，最多 4000 字）通过微信机器人发到手机；不会把电脑上其它对话的回复也推过去。
+- **不会重复**：如果这个会话本身就是从微信发起的（已绑定微信对话），微信插件本来就会把回复发回微信，本插件会跳过。
+- **实现**：Host 直接调用微信插件自带的 `dsh-wechat-send` 命令模块（与插件共用回复窗口计数；窗口用完时消息会排队，不会丢）。
+- **前置条件**：安装并启用 `dsh-wechat-plugin`，在 **设置 → 微信** 扫码登录，并用手机给机器人发一条消息建立绑定。
+- **注意**：回复内容会离开这台电脑进入微信，手机通知可能被旁人看到；微信一个回复窗口最多连发 10 条，超出的排队等下次互动；电脑需保持运行。
+
 ## 本机接口
 
 Host 侧只注册一个仅回环可访问的 JSON 接口（`127.0.0.1` / `::1`），其它地址一律 403：
@@ -166,6 +177,8 @@ GET  /push-to-talk/api/hotkey/state    辅助进程状态
 GET  /push-to-talk/api/hotkey/poll     长轮询按键 down/up 事件（?since=N）
 POST /push-to-talk/api/overlay/arm     回复浮窗（实验）：开始监听某会话这一次提问的回复（流式）
 POST /push-to-talk/api/overlay/config  回复浮窗（实验）：设置背景不透明度/字体/字号（{ opacity, fontFamily, fontSize }）
+POST /push-to-talk/api/wechat/config   回复同步到微信（实验）：{ enabled }
+GET  /push-to-talk/api/wechat/state    回复同步到微信（实验）：状态、是否可用、上次错误
 POST /push-to-talk/api/overlay/show    回复浮窗（实验）：直接显示一段文字（调试用）
 POST /push-to-talk/api/overlay/hide    回复浮窗（实验）：收起浮窗
 GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
@@ -190,6 +203,7 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - `client.js` — 浏览器插件：按住手势与单键按住、全局按键事件订阅、录音与 16 kHz 重采样、识别状态条、设置行、插入并发送。
 - `screenshot.ps1` — Windows 辅助进程：按需截取整个虚拟桌面并写出临时 PNG（最多缩放到 1920px 宽）。
 - `overlay.ps1` — 实验功能：Windows WPF 流式浮窗（默认关闭；支持背景不透明度、字体、字号）。
+- 微信同步（实验）：Host 通过 `dsh-wechat-plugin` 的 `dsh-wechat-send` 命令模块，把快捷键触发那一轮的最终回复发到已绑定的微信。
 - `market/index.json` — 官方插件市场索引（格式 1，已通过官方校验器）。
 - `cordis.patch.yml` — 停用内置语音前端并插入本插件行。
 - `locale/*.json`、`icon.svg` — 插件管理器中的标题、描述与图标。
@@ -214,6 +228,7 @@ GET  /push-to-talk/api/overlay/state   回复浮窗（实验）：状态
 - 回复浮窗（实验）探针测试通过：流式更新、最终显示、自动隐藏、再次显示、隐藏、退出正常（约 0.7–0.9 秒就绪）；
   不透明模式实测捕获排除 `affinity=0x11`，半透明模式（60%、宋体 22px）正常显示与更新。
 - `POST /overlay/config` 实测可切换不透明度/字体/字号并在下一次显示生效（辅助进程按新配置重启）。
+- 微信同步（实验）：客户端冒烟测试覆盖开关默认关闭、开启后持久化并推送到 Host；Host 可解析 `dsh-wechat-plugin` 的 `dsh-wechat-send` 模块（本机未绑定微信时发送会以退出码 2 失败并记录原因）。
 - 用户已在真实桌面实测：其它软件中按 F2 完成「按键 → 识别 → 发送 → 助手执行」；按 F3 完成「截图 → 自动发送 → 会话收到图片消息」（1920×1080）。
 
 ## 测试

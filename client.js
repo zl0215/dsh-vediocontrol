@@ -189,6 +189,20 @@ window.__ModuleLoader__.load({
         localStorage.setItem(SCREENSHOT_ENABLED_STORAGE, value === true ? '1' : '0')
       } catch {}
     }
+    const WECHAT_STORAGE = 'dsh.push-to-talk.wechat'
+    function loadWechatMirror() {
+      try {
+        // Off by default: replies leaving the PC to WeChat is an explicit choice.
+        return localStorage.getItem(WECHAT_STORAGE) === '1'
+      } catch {
+        return false
+      }
+    }
+    function storeWechatMirror(value) {
+      try {
+        localStorage.setItem(WECHAT_STORAGE, value === true ? '1' : '0')
+      } catch {}
+    }
 
     //#region dictionaries
     const zh = {
@@ -274,6 +288,9 @@ window.__ModuleLoader__.load({
       screenshotSent: '截图已发送',
       screenshotFailed: '截图失败：{message}',
       screenshotNoSession: '没有打开的会话，无法发送截图',
+      wechatTitle: '回复同步到微信',
+      wechatDescOn: '已开启：用全局快捷键或 F3 触发的那一轮，最终回复会通过已绑定的微信机器人发到手机。',
+      wechatDescOff: '默认关闭。开启后，按 F2/F3 触发的那一轮回复会发送到微信；需要先在「设置 → 微信」绑定微信插件。',
       keyControlLeft: '左 Ctrl',
       keyControlRight: '右 Ctrl',
       keyAltLeft: '左 Alt',
@@ -366,6 +383,9 @@ window.__ModuleLoader__.load({
       screenshotSent: 'Screenshot sent',
       screenshotFailed: 'Screenshot failed: {message}',
       screenshotNoSession: 'No open session to send the screenshot to',
+      wechatTitle: 'Mirror replies to WeChat',
+      wechatDescOn: 'On: the final reply of a global-key / F3 turn is sent to your phone through the bound WeChat bot.',
+      wechatDescOff: 'Off by default. When on, the reply to a global-key / F3 turn is sent to WeChat; bind the WeChat plugin first (Settings → WeChat).',
       keyControlLeft: 'Left Ctrl',
       keyControlRight: 'Right Ctrl',
       keyAltLeft: 'Left Alt',
@@ -763,6 +783,7 @@ window.__ModuleLoader__.load({
         overlayFontSize: loadOverlayNumber(OVERLAY_FONT_SIZE_STORAGE, OVERLAY_DEFAULT_FONT_SIZE, 10, 40),
         screenshotKey: loadScreenshotKey(),
         screenshotEnabled: loadScreenshotEnabled(),
+        wechatMirror: loadWechatMirror(),
         capturingTarget: '',
       }
       applyKeepWarm(state.keepWarm)
@@ -904,6 +925,26 @@ window.__ModuleLoader__.load({
         storeScreenshotEnabled(next)
         emit({ screenshotEnabled: next })
         if (state.globalHotkey) void syncGlobalBinding()
+      }
+
+      /** Tell the Host whether the final reply should be mirrored to WeChat. */
+      async function syncWechatMirror() {
+        if (disposed) return
+        try {
+          await fetch(API + '/wechat/config', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: state.wechatMirror === true }),
+          })
+        } catch {}
+      }
+
+      function setWechatMirror(value) {
+        const next = value === true
+        storeWechatMirror(next)
+        emit({ wechatMirror: next })
+        void syncWechatMirror()
       }
 
       /** Tell the Host which single key the global helper should listen for. */
@@ -1805,6 +1846,8 @@ window.__ModuleLoader__.load({
         setScreenshotKey,
         setScreenshotEnabled,
         captureAndSendScreenshot,
+        setWechatMirror,
+        syncWechatMirror,
         setPermission,
         setKeepWarm,
         setGlobalHotkey,
@@ -1990,6 +2033,7 @@ window.__ModuleLoader__.load({
         }
         // The Host keeps the overlay appearance in memory; push it on load.
         void controller.syncOverlayConfig()
+        void controller.syncWechatMirror()
         const onFocus = () => {
           if (controller.getState().globalHotkey && !controller.getState().globalReady) void controller.syncGlobalBinding()
           // Back in DSH: the reply can be read here, so drop the on-screen copy.
@@ -2510,6 +2554,40 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /** Settings → General row: mirror the reply of a shortcut turn to WeChat. */
+      function WechatRow() {
+        useLocale()
+        const state = React.useSyncExternalStore(controller.subscribe, controller.getState)
+        const t = controller.t
+        return h(
+          'div',
+          { className: 'dpt-setting' },
+          h('style', null, STYLES),
+          h(
+            'div',
+            { className: 'dpt-setting-text' },
+            h('strong', { className: 'dpt-setting-title' }, t('wechatTitle')),
+            h('span', { className: 'dpt-setting-desc' }, state.wechatMirror ? t('wechatDescOn') : t('wechatDescOff')),
+          ),
+          h(
+            'div',
+            { className: 'dpt-setting-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'switch',
+                'aria-checked': state.wechatMirror ? 'true' : 'false',
+                className: 'dpt-button',
+                'data-primary': state.wechatMirror ? 'true' : 'false',
+                onClick: () => controller.setWechatMirror(!state.wechatMirror),
+              },
+              state.wechatMirror ? t('on') : t('off'),
+            ),
+          ),
+        )
+      }
+
       function providerUsablePhase(phase) {
         return phase === 'ready' || phase === 'standby' || phase === 'waking'
       }
@@ -2604,6 +2682,16 @@ window.__ModuleLoader__.load({
             order: 26,
           },
           OverlayRow,
+        ),
+      )
+      ctx.slots.inject('settings.general.item', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.general.item',
+            id: 'push-to-talk-wechat',
+            order: 27,
+          },
+          WechatRow,
         ),
       )
     }

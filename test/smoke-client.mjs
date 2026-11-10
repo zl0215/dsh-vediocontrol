@@ -233,8 +233,11 @@ const shortcut = registrations.find((entry) => entry.options.id === 'push-to-tal
 const keepWarm = registrations.find((entry) => entry.options.id === 'push-to-talk-keep-warm')
 const globalRow = registrations.find((entry) => entry.options.id === 'push-to-talk-global')
 const screenshotRow = registrations.find((entry) => entry.options.id === 'push-to-talk-screenshot')
+const wechatRow = registrations.find((entry) => entry.options.id === 'push-to-talk-wechat')
 const overlayRow = registrations.find((entry) => entry.options.id === 'push-to-talk-overlay')
-if (!shortcut || !keepWarm || !globalRow || !screenshotRow || !overlayRow) throw new Error('settings rows are not all registered')
+if (!shortcut || !keepWarm || !globalRow || !screenshotRow || !overlayRow || !wechatRow) {
+  throw new Error('settings rows are not all registered')
+}
 
 const micTree = mic.component(props)
 if (!micTree) throw new Error('microphone rendered nothing')
@@ -257,6 +260,8 @@ const screenshotTree = screenshotRow.component({})
 if (!screenshotTree) throw new Error('screenshot settings row rendered nothing')
 const overlayTree = overlayRow.component({})
 if (!overlayTree) throw new Error('overlay settings row rendered nothing')
+const wechatTree = wechatRow.component({})
+if (!wechatTree) throw new Error('wechat settings row rendered nothing')
 
 const flatten = (node) => {
   if (node === null || node === undefined) return ''
@@ -398,6 +403,20 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 if (storage.get('dsh.push-to-talk.overlay') !== '0') throw new Error('disabling the overlay was not persisted')
 const overlayOffTree = overlayRow.component({})
 if (!flatten(overlayOffTree).includes('已关闭')) throw new Error('overlay row did not show the disabled state')
+
+// WeChat mirror switch: off by default; enabling persists and reaches the Host.
+if (!flatten(wechatTree).includes('已关闭')) throw new Error('wechat row does not show the default disabled state')
+const wechatSwitch = findButtons(wechatTree).find((button) => button.props?.['role'] === 'switch')
+if (!wechatSwitch) throw new Error('wechat row has no switch')
+wechatSwitch.props.onClick()
+await new Promise((resolve) => setTimeout(resolve, 30))
+if (storage.get('dsh.push-to-talk.wechat') !== '1') throw new Error('enabling the WeChat mirror was not persisted')
+const wechatConfigCall = fetchCalls.filter((call) => call.url.includes('/wechat/config')).pop()
+if (!wechatConfigCall || JSON.parse(wechatConfigCall.body).enabled !== true) {
+  throw new Error('enabling the WeChat mirror did not reach the Host')
+}
+const wechatOnTree = wechatRow.component({})
+if (!flatten(wechatOnTree).includes('已开启')) throw new Error('wechat row did not show the enabled state')
 
 // A failed microphone start keeps a retry action in the dock. Press the mic
 // button directly so the path does not depend on poll timing; Node has no

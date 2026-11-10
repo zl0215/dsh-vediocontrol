@@ -28,8 +28,8 @@
         "zh": "按住说话"
       },
       "description": {
-        "en": "Hold-to-talk dictation plus one-key screenshot sending for the composer: hold to record and release to transcribe, or press one key to capture the screen and send it. Needs the voice input backend bundle.",
-        "zh": "输入框的按住说话 + 单键截屏发送：按住录音、松开识别并发送；按一个键截取整个屏幕并直接发送。需要语音输入后端插件包。"
+        "en": "Hold-to-talk dictation plus one-key screenshot sending, with an optional switch that mirrors the reply of that turn to WeChat. Needs the voice input backend bundle.",
+        "zh": "输入框的按住说话 + 单键截屏发送，并可选把这一轮回复同步到微信。需要语音输入后端插件包。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlB1c2ggdG8gdGFsayI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InB0dC1iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMyYjZjZjYiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjN2I0ZGZmIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSIyIiB5PSIyIiB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHJ4PSIxNiIgZmlsbD0idXJsKCNwdHQtYmcpIi8+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMCIgcj0iMTUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9IjAuMjgiIHN0cm9rZS13aWR0aD0iMiIvPgogIDxyZWN0IHg9IjI3IiB5PSIxNiIgd2lkdGg9IjEwIiBoZWlnaHQ9IjE3IiByeD0iNSIgZmlsbD0iI2ZmZmZmZiIvPgogIDxwYXRoIGQ9Ik0yMiAzMGExMCAxMCAwIDAgMCAyMCAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHBhdGggZD0iTTMyIDQxdjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSI0NiIgY3k9IjQ2IiByPSI3IiBmaWxsPSIjZmY0ZDRmIi8+CiAgPGNpcmNsZSBjeD0iNDYiIGN5PSI0NiIgcj0iMyIgZmlsbD0iI2ZmZmZmZiIvPgo8L3N2Zz4K",
       "author": "wzl",
@@ -38,6 +38,7 @@
         "keywords": [
           "push-to-talk",
           "screenshot",
+          "wechat",
           "hold-to-talk",
           "dictation",
           "speech-to-text",
@@ -48,8 +49,8 @@
       },
       "versions": [
         {
-          "version": "0.2.2",
-          "publishTimestamp": 1794309193,
+          "version": "0.3.0",
+          "publishTimestamp": 1794318992,
           "source": {
             "type": "git",
             "url": "https://github.com/zl0215/dsh-vediocontrol",
